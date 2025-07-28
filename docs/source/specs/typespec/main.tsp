@@ -7,7 +7,7 @@ using TypeSpec.Http;
 using TypeSpec.Rest;
 using TypeSpec.Versioning;
 
-@service({title:"Role Based Access Control for Kessel Project"})
+@service(#{title:"Role Based Access Control for Kessel Project"})
 
 @server("https://localhost:{port}/{basePath}", "Development Server", { basePath: string="api/rbac/v2", port: string="8000" })
 @server("https://console.stage.redhat.com/{basePath}", "Stage Server", { basePath: string="api/rbac/v2" })
@@ -294,4 +294,111 @@ namespace Workspaces {
       | Problems.CommonProblems
       | Problems.Problem400
       | Problems.Problem404;
+}
+
+@route("/role_bindings/")
+@tag("Role Bindings")
+@doc("Operations about role bindings")
+namespace RoleBindings {
+    @discriminator("type")
+    model BaseSubject {
+        @doc("Subject identifier")
+        id: string;
+        @doc("Name of the subject")
+        name: string;
+        @doc("Description of the subject")
+        description?: string;
+    }
+
+    model UserSubject extends BaseSubject {
+        @doc("Type of subject")
+        type: "user";
+        @doc("Email of the user")
+        email?: string;
+        @doc("First name of the user")
+        first_name?: string;
+        @doc("Last name of the user")
+        last_name?: string;
+    }
+
+    model GroupSubject extends BaseSubject {
+        @doc("Type of subject")
+        type: "group";
+        @doc("Number of users in the group")
+        user_count?: int64;
+        @doc("Whether the group is a system group")
+        is_system?: boolean;
+    }
+
+    alias Subject = UserSubject | GroupSubject;
+
+    @discriminator("type")
+    model BaseResource {
+        @doc("Resource identifier")
+        id: string;
+        @doc("Name of the resource")
+        name: string;
+    }
+
+    model WorkspaceResource extends BaseResource {
+        @doc("Type of resource")
+        type: "workspace";
+        @doc("Parent workspace ID")
+        parent_id?: UUID;
+        @doc("Workspace type")
+        workspace_type?: string;
+    }
+
+    alias Resource = WorkspaceResource;
+
+    model Role {
+        @doc("Role identifier")
+        id: string;
+        @doc("Name of the role")
+        name: string;
+        @doc("Description of the role")
+        description?: string;
+    }
+
+    model RoleBindingBySubject {
+        @doc("Timestamp of last modification")
+        last_modified: offsetDateTime;
+        @doc("Subject of the role binding")
+        subject: Subject;
+        @doc("Roles assigned to the subject")
+        roles: Role[];
+        @doc("Resources the roles apply to")
+        resources: Resource[];
+    }
+
+    model RoleBindingBySubjectListResponse {
+        @doc("Pagination metadata")
+        meta: Workspaces.PaginationMeta;
+        @doc("Pagination links")
+        links: Workspaces.PaginationLinks;
+        @doc("List of role bindings grouped by subject")
+        data: RoleBindingBySubject[];
+    }
+
+    @doc("List role bindings grouped by subject")
+    @summary("List role bindings grouped by subject")
+    @route("by_subject")
+    @get op listBySubject(
+        @query limit?: int64 = 10;
+        @query offset?: int64 = 0;
+        
+        @doc("Filter by resource type")
+        @query("filters[resource.type]") filterResourceType?: string;
+        @doc("Filter by resource ID")
+        @query("filters[resource.id]") filterResourceId?: string;
+        @doc("Filter by subject type")
+        @query("filters[subject.type]") filterSubjectType?: string;
+        @doc("Filter by subject ID")
+        @query("filters[subject.id]") filterSubjectId?: string;
+
+        @doc("Additional columns to include in response (comma-separated)")
+        @query columns?: string;
+        @doc("Sort by specified field(s), prefix with '-' for descending order")
+        @query sort_by?: string;
+    ): RoleBindingBySubjectListResponse | Problems.CommonProblems;
 }
