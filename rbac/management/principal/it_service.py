@@ -128,6 +128,9 @@ class ITService:
         if not bearer_token:
             raise MissingAuthorizationError()
 
+        if len(client_ids) > IT_SERVICE_ACCOUNT_CLIENT_ID_BATCH_SIZE:
+            raise ValueError("Request for too many client IDs.")
+
         received_service_accounts: list[dict] = []
 
         # Attempt fetching all the service accounts for the tenant.
@@ -152,9 +155,6 @@ class ITService:
                 # Prevent this from resulting in an overly long URL if too many client IDs are passed.
                 # request_service_accounts handles batching the IDs as needed.
                 if client_ids:
-                    if len(client_ids) > IT_SERVICE_ACCOUNT_CLIENT_ID_BATCH_SIZE:
-                        raise ValueError("Request for too many client IDs.")
-
                     parameters["clientId"] = client_ids
 
                 # Call IT.
