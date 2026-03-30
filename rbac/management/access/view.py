@@ -20,7 +20,6 @@
 from django.db.models import Prefetch
 from management.cache import AccessCache
 from management.models import Access, ResourceDefinition
-from management.permissions.v2_edit_api_access import V1ApiBlockedWhenWorkspacesEnabled
 from management.querysets import get_access_queryset
 from management.role.serializer import AccessSerializer
 from management.utils import (
@@ -90,7 +89,7 @@ class AccessView(APIView):
 
     serializer_class = AccessSerializer
     pagination_class = api_settings.DEFAULT_PAGINATION_CLASS
-    permission_classes = (V1ApiBlockedWhenWorkspacesEnabled,)
+    permission_classes = ()
 
     def get_access_queryset_unique_by_column(self, *columns):
         """Define the access query set with DISTINCT ON clause to get unique records."""
