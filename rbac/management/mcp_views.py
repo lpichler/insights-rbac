@@ -34,6 +34,7 @@ from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from management.group.view import GroupViewSet
 from management.principal.view import PrincipalView
 from mcp.server.fastmcp import FastMCP
 from prometheus_client import Counter, Histogram
@@ -43,6 +44,8 @@ from api.common import RH_IDENTITY_HEADER
 # Cache the view function — PrincipalView.as_view() returns a new callable each time,
 # but the result is stateless and reusable.
 _principal_view = PrincipalView.as_view()
+_group_list_view = GroupViewSet.as_view({"get": "list"})
+_group_detail_view = GroupViewSet.as_view({"get": "retrieve"})
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +203,50 @@ def list_principals(
     view_request = _clone_request(request, path, data=query_params)
     response = _principal_view(view_request)
 
+    if hasattr(response, "data"):
+        return json.dumps(response.data, default=str)
+    return response.content.decode()
+
+
+@register_tool(
+    description="List groups for the authenticated organization. Supports filtering by name and system flag.",
+    requires_auth=True,
+)
+def list_groups(
+    request: HttpRequest,
+    *,
+    limit: int = 10,
+    offset: int = 0,
+    name: str = "",
+    system: str = "",
+) -> str:
+    """List groups by delegating to GroupViewSet."""
+    query_params = {"limit": str(limit), "offset": str(offset)}
+    if name:
+        query_params["name"] = name
+    if system:
+        query_params["system"] = system
+    path = reverse("v1_management:group-list")
+    view_request = _clone_request(request, path, data=query_params)
+    response = _group_list_view(view_request)
+    if hasattr(response, "data"):
+        return json.dumps(response.data, default=str)
+    return response.content.decode()
+
+
+@register_tool(
+    description="Get details of a specific group by UUID, including its principals and roles.",
+    requires_auth=True,
+)
+def get_group(
+    request: HttpRequest,
+    *,
+    uuid: str,
+) -> str:
+    """Get group details by delegating to GroupViewSet.retrieve."""
+    path = reverse("v1_management:group-detail", kwargs={"uuid": uuid})
+    view_request = _clone_request(request, path)
+    response = _group_detail_view(view_request, uuid=uuid)
     if hasattr(response, "data"):
         return json.dumps(response.data, default=str)
     return response.content.decode()
