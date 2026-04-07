@@ -34,6 +34,7 @@ from django.urls import reverse
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.csrf import csrf_exempt
+from management.group.view import GroupViewSet
 from management.principal.view import PrincipalView
 from mcp.server.fastmcp import FastMCP
 from prometheus_client import Counter, Histogram
@@ -43,6 +44,10 @@ from api.common import RH_IDENTITY_HEADER
 # Cache the view function — PrincipalView.as_view() returns a new callable each time,
 # but the result is stateless and reusable.
 _principal_view = PrincipalView.as_view()
+
+# Cached GroupViewSet views for detail (retrieve) and principals actions.
+_group_detail_view = GroupViewSet.as_view({"get": "retrieve"})
+_group_principals_view = GroupViewSet.as_view({"post": "principals"})
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +92,7 @@ class ToolConfig:
     fn: Callable[..., str]
     requires_auth: bool = False
     passes_request: bool = False
+    risk_level: str = "read"  # "read" | "high" | "critical"
 
 
 _TOOL_CONFIG: dict[str, ToolConfig] = {}
@@ -96,6 +102,7 @@ def register_tool(
     *,
     description: str,
     requires_auth: bool = False,
+    risk_level: str = "read",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a tool with both FastMCP and _TOOL_CONFIG.
 
@@ -116,6 +123,7 @@ def register_tool(
             fn=fn,
             requires_auth=requires_auth,
             passes_request=passes_request,
+            risk_level=risk_level,
         )
 
         if passes_request:
@@ -146,6 +154,33 @@ def _clone_request(source: HttpRequest, path: str, **kwargs: Any) -> HttpRequest
     view applies the same permission checks and is observable in traces.
     """
     view_request = _request_factory.get(path, **kwargs)
+    view_request.user = source.user
+    view_request.tenant = getattr(source, "tenant", None)
+    view_request.req_id = getattr(source, "req_id", None)
+
+    identity = source.META.get(RH_IDENTITY_HEADER)
+    if identity:
+        view_request.META[RH_IDENTITY_HEADER] = identity
+
+    for header in _FORWARDED_HEADERS:
+        value = source.META.get(header)
+        if value:
+            view_request.META[header] = value
+
+    return view_request
+
+
+def _clone_post_request(source: HttpRequest, path: str, data: dict[str, Any]) -> HttpRequest:
+    """Clone a Django request as a POST for internal view delegation.
+
+    Like ``_clone_request`` but creates a POST request with JSON body,
+    suitable for delegating to DRF viewsets that expect ``request.data``.
+    """
+    view_request = _request_factory.post(
+        path,
+        data=json.dumps(data),
+        content_type="application/json",
+    )
     view_request.user = source.user
     view_request.tenant = getattr(source, "tenant", None)
     view_request.req_id = getattr(source, "req_id", None)
@@ -202,6 +237,89 @@ def list_principals(
 
     if hasattr(response, "data"):
         return json.dumps(response.data, default=str)
+    return response.content.decode()
+
+
+_ADD_PRINCIPAL_DESC = (
+    "Add principal(s) to a group. Call without confirm=false to preview the change; "
+    "call again with confirm=true to execute it."
+)
+
+
+@register_tool(
+    description=_ADD_PRINCIPAL_DESC,
+    requires_auth=True,
+    risk_level="high",
+)
+def add_principal_to_group(
+    request: HttpRequest,
+    *,
+    group_uuid: str,
+    usernames: str,
+    confirm: bool = False,
+) -> str:
+    """Add principals to a group with a two-call confirmation pattern.
+
+    First call (confirm=false): returns a preview of the intended change
+    including group details and the list of principals to add.
+
+    Second call (confirm=true): executes the change by delegating to
+    GroupViewSet's principals POST action.
+    """
+    principals_list = [u.strip() for u in usernames.split(",") if u.strip()]
+
+    if not principals_list:
+        return json.dumps({"error": "No usernames provided"})
+
+    if not confirm:
+        # --- Preview mode ---
+        # Look up the group to show the caller what will happen.
+        path = reverse("v1_management:group-detail", kwargs={"uuid": group_uuid})
+        view_request = _clone_request(request, path)
+        response = _group_detail_view(view_request, uuid=group_uuid)
+
+        if not hasattr(response, "data"):
+            return json.dumps({"error": "Group not found or access denied"})
+
+        group_data = response.data
+        return json.dumps(
+            {
+                "action": "add_principal_to_group",
+                "group": {
+                    "uuid": group_uuid,
+                    "name": group_data.get("name", "unknown"),
+                },
+                "principals_to_add": principals_list,
+                "requires_confirmation": True,
+                "message": "Call again with confirm=true to execute this change",
+            },
+            default=str,
+        )
+
+    # --- Execute mode ---
+    # Build the POST body matching GroupPrincipalInputSerializer:
+    #   {"principals": [{"username": "jsmith"}, ...]}
+    post_data = {"principals": [{"username": u} for u in principals_list]}
+
+    path = reverse("v1_management:group-principals", kwargs={"uuid": group_uuid})
+    view_request = _clone_post_request(request, path, data=post_data)
+    response = _group_principals_view(view_request, uuid=group_uuid)
+
+    if hasattr(response, "data"):
+        resp_data = response.data
+        if hasattr(response, "status_code") and response.status_code >= 400:
+            return json.dumps({"error": resp_data}, default=str)
+        return json.dumps(
+            {
+                "action": "add_principal_to_group",
+                "status": "completed",
+                "group_uuid": group_uuid,
+                "principals_added": principals_list,
+                "response": resp_data,
+            },
+            default=str,
+        )
+
     return response.content.decode()
 
 
