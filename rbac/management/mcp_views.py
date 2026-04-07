@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from functools import lru_cache, wraps
 from typing import Any, Callable
 
+from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.test import RequestFactory
 from django.urls import reverse
@@ -60,6 +61,40 @@ mcp_tool_call_duration_seconds = Histogram(
     "Duration of MCP tool calls in seconds (excludes hello)",
     ["tool"],
 )
+mcp_rate_limited_total = Counter(
+    "rbac_mcp_rate_limited_total",
+    "Total MCP tool calls rejected by rate limiting",
+    ["tool", "risk_level"],
+)
+
+# --- Rate limiting configuration ---
+# (max_calls, window_seconds) per risk level
+_RATE_LIMITS = {
+    "read": (60, 60),  # 60 calls per 60 seconds
+    "high": (10, 60),  # 10 calls per 60 seconds
+}
+
+
+def _check_rate_limit(org_id: str, risk_level: str) -> tuple[bool, int]:
+    """Check if the org has exceeded its rate limit for this risk level.
+
+    Returns (allowed, retry_after_seconds).
+    """
+    max_calls, window = _RATE_LIMITS.get(risk_level, (60, 60))
+    cache_key = f"mcp_rate:{org_id}:{risk_level}"
+
+    current = cache.get(cache_key, 0)
+    if current >= max_calls:
+        return False, window
+
+    # Increment counter with TTL
+    try:
+        cache.incr(cache_key)
+    except ValueError:
+        cache.set(cache_key, 1, timeout=window)
+
+    return True, 0
+
 
 # Factory for building internal Django requests to delegate to views.
 _request_factory = RequestFactory()
@@ -87,6 +122,7 @@ class ToolConfig:
     fn: Callable[..., str]
     requires_auth: bool = False
     passes_request: bool = False
+    risk_level: str = "read"
 
 
 _TOOL_CONFIG: dict[str, ToolConfig] = {}
@@ -96,6 +132,7 @@ def register_tool(
     *,
     description: str,
     requires_auth: bool = False,
+    risk_level: str = "read",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a tool with both FastMCP and _TOOL_CONFIG.
 
@@ -116,6 +153,7 @@ def register_tool(
             fn=fn,
             requires_auth=requires_auth,
             passes_request=passes_request,
+            risk_level=risk_level,
         )
 
         if passes_request:
@@ -410,6 +448,18 @@ def _handle_tools_call(request: HttpRequest, request_id: Any, params: dict[str, 
             logger.warning("mcp: tools/call tool='%s' rejected, no auth", tool_name)
             _record_metric(tool_name, "auth_error")
             return _error_response(request_id, -32000, "Authentication required")
+
+    # Rate limiting (only for authenticated tools with a known org)
+    if config.requires_auth and org_id:
+        allowed, retry_after = _check_rate_limit(org_id, config.risk_level)
+        if not allowed:
+            mcp_rate_limited_total.labels(tool=tool_name, risk_level=config.risk_level).inc()
+            logger.warning("mcp: tools/call tool='%s' rate limited, org_id=%s", tool_name, org_id)
+            return _error_response(
+                request_id,
+                -32000,
+                f"Rate limit exceeded for {config.risk_level} tools. Retry after {retry_after} seconds.",
+            )
 
     track = tool_name != "hello"
     start = time.monotonic() if track else 0
