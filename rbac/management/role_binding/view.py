@@ -20,6 +20,7 @@ import logging
 
 from management.base_viewsets import BaseV2ViewSet
 from management.group.model import Group
+from management.permissions.ceiling_check import RoleBindingCeilingPermission
 from management.permissions.role_binding_access import (
     RoleBindingKesselAccessPermission,
     RoleBindingSystemUserAccessPermission,
@@ -107,6 +108,7 @@ class RoleBindingViewSet(AtomicOperationsMixin, BaseV2ViewSet):
     permission_classes = (
         RoleBindingSystemUserAccessPermission,
         RoleBindingKesselAccessPermission,
+        RoleBindingCeilingPermission,
         V2WriteRequiresWorkspacesEnabled,
     )
     pagination_class = V2CursorPagination
