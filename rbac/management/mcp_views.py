@@ -25,6 +25,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from functools import lru_cache, wraps
 from typing import Any, Callable
 
@@ -158,7 +159,7 @@ mcp = FastMCP("RBAC")
 # stub functions and a manual config dict.
 
 
-class ApiVersion:
+class ApiVersion(str, Enum):
     """API version classification for MCP tools."""
 
     UNIFIED = "unified"
@@ -168,6 +169,13 @@ class ApiVersion:
     UNVERSIONED = "unversioned"
 
 
+class OrgVersion:
+    """Org-level version markers returned in tool results."""
+
+    V1 = "v1"
+    V2 = "v2"
+
+
 @dataclass(frozen=True)
 class ToolConfig:
     """Configuration for an MCP tool."""
@@ -175,7 +183,7 @@ class ToolConfig:
     fn: Callable[..., str]
     requires_auth: bool = False
     passes_request: bool = False
-    api_version: str = ApiVersion.COMMON
+    api_version: ApiVersion = ApiVersion.COMMON
 
 
 _TOOL_CONFIG: dict[str, ToolConfig] = {}
@@ -185,7 +193,7 @@ def register_tool(
     *,
     description: str,
     requires_auth: bool = False,
-    api_version: str = ApiVersion.COMMON,
+    api_version: ApiVersion = ApiVersion.COMMON,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a tool with both FastMCP and _TOOL_CONFIG.
 
@@ -332,6 +340,38 @@ def _call_view(
     if hasattr(response, "render"):
         response = response.render()
     return response.content.decode()
+
+
+def _call_json_view_with_org_version(
+    request: HttpRequest,
+    view: Callable[..., Any],
+    path: str,
+    query_params: dict[str, str] | None = None,
+    *,
+    view_kwargs: dict[str, Any] | None = None,
+    org_version: str | None = None,
+) -> str:
+    """Call a view, parse its JSON response, tag with org_version, and return JSON."""
+    raw = _call_view(request, view, path, query_params or {}, **(view_kwargs or {}))
+    data = json.loads(raw)
+    if org_version is not None:
+        data["org_version"] = org_version
+    return json.dumps(data)
+
+
+def _get_tool_config(name: str) -> ToolConfig | None:
+    """Look up a tool's configuration by name."""
+    return _TOOL_CONFIG.get(name)
+
+
+def _is_tool_enabled(tool_name: str) -> bool:
+    """Check whether a tool is enabled in the current deployment."""
+    config = _get_tool_config(tool_name)
+    if config is None:
+        return True
+    if config.api_version is ApiVersion.V2 and not _is_v2_available():
+        return False
+    return True
 
 
 # ┌──────────────────────────────────┬───────────┬────────────────────────────────────────────┐
@@ -642,7 +682,22 @@ def search_roles(
     """Search roles, auto-detecting V1/V2 and delegating to the appropriate view."""
     tenant = getattr(request, "tenant", None)
     if tenant and is_v2_write_activated(tenant):
-        return _search_roles_v2(request, limit, offset, name, resource_type, order_by)
+        v1_only_filters = {
+            "display_name": display_name,
+            "permission": permission,
+            "application": application,
+            "system": system,
+        }
+        ignored = {k: v for k, v in v1_only_filters.items() if v}
+        result = _search_roles_v2(request, limit, offset, name, resource_type, order_by)
+        if ignored:
+            data = json.loads(result)
+            data["ignored_filters"] = {
+                "filters": list(ignored.keys()),
+                "reason": "These filters are only supported on V1 organizations and were not applied.",
+            }
+            return json.dumps(data)
+        return result
     return _search_roles_v1(request, limit, offset, name, display_name, permission, application, system, order_by)
 
 
@@ -676,10 +731,7 @@ def _search_roles_v1(
         query_params["order_by"] = order_by
 
     path = reverse("v1_management:role-list")
-    raw = _call_view(request, _role_v1_list_view, path, query_params)
-    result = json.loads(raw)
-    result["org_version"] = "v1"
-    return json.dumps(result)
+    return _call_json_view_with_org_version(request, _role_v1_list_view, path, query_params, org_version=OrgVersion.V1)
 
 
 def _search_roles_v2(
@@ -703,10 +755,7 @@ def _search_roles_v2(
         query_params["order_by"] = order_by
 
     path = reverse("v2_management:roles-list")
-    raw = _call_view(request, _role_v2_list_view, path, query_params)
-    result = json.loads(raw)
-    result["org_version"] = "v2"
-    return json.dumps(result)
+    return _call_json_view_with_org_version(request, _role_v2_list_view, path, query_params, org_version=OrgVersion.V2)
 
 
 @register_tool(
@@ -730,28 +779,45 @@ def get_role(
     return _get_role_v1(request, role_uuid)
 
 
+_ROLE_ACCESS_PAGE_SIZE = 500
+
+
 def _get_role_v1(request: HttpRequest, role_uuid: str) -> str:
-    """Get role details using V1 API (retrieve + access)."""
+    """Get role details using V1 API (retrieve + access, paginating through all pages)."""
     detail_path = reverse("v1_management:role-detail", kwargs={"uuid": role_uuid})
     detail_raw = _call_view(request, _role_v1_detail_view, detail_path, {}, uuid=role_uuid)
     result = json.loads(detail_raw)
 
     access_path = reverse("v1_management:role-access", kwargs={"uuid": role_uuid})
-    access_raw = _call_view(request, _role_access_view, access_path, {"limit": "1000"}, uuid=role_uuid)
-    access_data = json.loads(access_raw)
+    all_permissions: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        access_raw = _call_view(
+            request,
+            _role_access_view,
+            access_path,
+            {"limit": str(_ROLE_ACCESS_PAGE_SIZE), "offset": str(offset)},
+            uuid=role_uuid,
+        )
+        access_data = json.loads(access_raw)
+        page = access_data.get("data", [])
+        all_permissions.extend(page)
+        total = access_data.get("meta", {}).get("count", 0)
+        if offset + len(page) >= total or not page:
+            break
+        offset += len(page)
 
-    result["permissions"] = access_data.get("data", [])
-    result["org_version"] = "v1"
+    result["permissions"] = all_permissions
+    result["org_version"] = OrgVersion.V1
     return json.dumps(result)
 
 
 def _get_role_v2(request: HttpRequest, role_uuid: str) -> str:
     """Get role details using V2 API."""
     path = reverse("v2_management:roles-detail", kwargs={"uuid": role_uuid})
-    raw = _call_view(request, _role_v2_detail_view, path, {}, uuid=role_uuid)
-    result = json.loads(raw)
-    result["org_version"] = "v2"
-    return json.dumps(result)
+    return _call_json_view_with_org_version(
+        request, _role_v2_detail_view, path, {}, view_kwargs={"uuid": role_uuid}, org_version=OrgVersion.V2
+    )
 
 
 @register_tool(
@@ -1125,7 +1191,7 @@ def check_user_permission(
                 "allowed": False,
                 "username": username,
                 "permission": permission,
-                "org_version": "v2",
+                "org_version": OrgVersion.V2,
                 "hint": f"User '{username}' not found in this organization.",
             }
         )
@@ -1150,7 +1216,7 @@ def check_user_permission(
                 "allowed": False,
                 "username": username,
                 "permission": permission,
-                "org_version": "v2",
+                "org_version": OrgVersion.V2,
                 "total_bindings_checked": 0,
                 "hint": f"User '{username}' has no role bindings in this V2 organization. "
                 f"Use list_role_bindings(granted_subject_type='user', "
@@ -1176,7 +1242,7 @@ def check_user_permission(
                         "matched_permission": perm_str,
                         "role_name": role_data.get("name"),
                         "role_uuid": str(role_uuid),
-                        "org_version": "v2",
+                        "org_version": OrgVersion.V2,
                     }
                 )
 
@@ -1185,7 +1251,7 @@ def check_user_permission(
             "allowed": False,
             "username": username,
             "permission": permission,
-            "org_version": "v2",
+            "org_version": OrgVersion.V2,
             "total_roles_checked": len(role_uuids),
             "hint": f"User '{username}' does not have permission '{permission}' in this V2 organization. "
             f"Use list_role_bindings(granted_subject_type='user', "
@@ -1412,7 +1478,6 @@ def _is_v2_available() -> bool:
 
 def _handle_tools_list(request: HttpRequest, request_id: Any, params: dict[str, Any]) -> JsonResponse:
     """Handle MCP tools/list request using FastMCP's registered tools."""
-    v2_available = _is_v2_available()
     overrides = _get_all_description_overrides()
     tools_data = [
         {
@@ -1421,7 +1486,7 @@ def _handle_tools_list(request: HttpRequest, request_id: Any, params: dict[str, 
             "inputSchema": tool.inputSchema,
         }
         for tool in _get_tools()
-        if v2_available or _TOOL_CONFIG.get(tool.name, ToolConfig(fn=lambda: "")).api_version != ApiVersion.V2
+        if _is_tool_enabled(tool.name)
     ]
     return _success_response(request_id, {"tools": tools_data})
 
@@ -1450,17 +1515,17 @@ def _handle_tools_call(request: HttpRequest, request_id: Any, params: dict[str, 
     if not isinstance(arguments, dict):
         return _error_response(request_id, -32602, "Invalid params: arguments must be an object")
 
-    config = _TOOL_CONFIG.get(tool_name)
+    config = _get_tool_config(tool_name)
     if config is None:
         logger.warning("mcp: tools/call unknown tool='%s'", tool_name)
         return _error_response(request_id, -32602, f"Unknown tool: {tool_name}")
 
-    if config.api_version == ApiVersion.V2 and not _is_v2_available():
-        logger.warning("mcp: tools/call tool='%s' rejected, V2 APIs not enabled", tool_name)
+    if not _is_tool_enabled(tool_name):
+        logger.warning("mcp: tools/call tool='%s' rejected, not enabled in this deployment", tool_name)
         return _error_response(
             request_id,
             -32602,
-            f"Tool '{tool_name}' requires V2 APIs, which are not enabled in this deployment.",
+            f"Tool '{tool_name}' is not enabled in this deployment.",
         )
 
     org_id = getattr(getattr(request, "user", None), "org_id", None)

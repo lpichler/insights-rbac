@@ -24,7 +24,14 @@ from importlib import reload
 from django.test import override_settings
 from django.urls import clear_url_caches
 from django.utils import timezone
-from management.mcp_views import ApiVersion, ToolConfig, _TOOL_CONFIG, _permission_matches
+from management.mcp_views import (
+    ApiVersion,
+    OrgVersion,
+    ToolConfig,
+    _TOOL_CONFIG,
+    _is_tool_enabled,
+    _permission_matches,
+)
 from management.models import Access, Group, Permission, Policy, Principal, Role
 from management.role.v2_model import RoleV2
 from management.role_binding.model import RoleBinding, RoleBindingGroup, RoleBindingPrincipal
@@ -1570,6 +1577,42 @@ class MCPUnifiedSearchRolesV2Tests(MCPToolTestMixin, IdentityRequest):
         role_names = [r["name"] for r in tool_output["data"]]
         self.assertIn("Cost Reader", role_names)
 
+    def test_search_roles_v2_wildcard_name_filter(self):
+        """Positive: search_roles on V2 org supports wildcard name filters."""
+        RoleV2.objects.create(name="Cost Reader", tenant=self.tenant, type=RoleV2.Types.CUSTOM)
+        RoleV2.objects.create(name="Cost Admin", tenant=self.tenant, type=RoleV2.Types.CUSTOM)
+        RoleV2.objects.create(name="Other V2 Role", tenant=self.tenant, type=RoleV2.Types.CUSTOM)
+
+        response = self._call_tool("search_roles", {"name": "Cost*"})
+
+        self.assertEqual(response.status_code, 200)
+        tool_output = self._get_tool_output(response)
+        self.assertEqual(tool_output["org_version"], "v2")
+        role_names = [r["name"] for r in tool_output["data"]]
+        self.assertIn("Cost Reader", role_names)
+        self.assertIn("Cost Admin", role_names)
+        self.assertNotIn("Other V2 Role", role_names)
+
+    def test_search_roles_v2_ignored_v1_filters(self):
+        """Positive: V1-only filters on V2 org produce ignored_filters warning."""
+        RoleV2.objects.create(name="Any Role", tenant=self.tenant, type=RoleV2.Types.CUSTOM)
+        response = self._call_tool("search_roles", {"permission": "app:res:read"})
+
+        self.assertEqual(response.status_code, 200)
+        tool_output = self._get_tool_output(response)
+        self.assertEqual(tool_output["org_version"], "v2")
+        self.assertIn("ignored_filters", tool_output)
+        self.assertIn("permission", tool_output["ignored_filters"]["filters"])
+
+    def test_search_roles_v2_no_ignored_filters_when_none_passed(self):
+        """Positive: no ignored_filters key when only V2-compatible filters are used."""
+        RoleV2.objects.create(name="Any Role", tenant=self.tenant, type=RoleV2.Types.CUSTOM)
+        response = self._call_tool("search_roles", {"name": "Any Role"})
+
+        self.assertEqual(response.status_code, 200)
+        tool_output = self._get_tool_output(response)
+        self.assertNotIn("ignored_filters", tool_output)
+
 
 @override_settings(BYPASS_BOP_VERIFICATION=True, V2_APIS_ENABLED=True)
 class MCPUnifiedGetRoleTests(MCPToolTestMixin, IdentityRequest):
@@ -1666,7 +1709,7 @@ class MCPDeploymentGatingTests(MCPToolTestMixin, IdentityRequest):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertIn("error", data)
-        self.assertIn("V2 APIs", data["error"]["message"])
+        self.assertIn("not enabled", data["error"]["message"])
 
     def test_api_version_classification(self):
         """Verify all tools have an api_version set."""
