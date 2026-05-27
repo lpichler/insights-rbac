@@ -44,8 +44,9 @@ from management.cache import _connection_pool
 from management.group.view import GroupViewSet
 from management.models import Access, AuditLog, Group, Permission
 from management.permission.view import PermissionViewSet
+from management.permissions.workspace_inventory_access import WorkspaceInventoryAccessChecker
 from management.principal.model import Principal
-from management.principal.proxy import PrincipalProxy
+from management.principal.proxy import PrincipalProxy, get_kessel_principal_id
 from management.principal.view import PrincipalView
 from management.role.model import Role
 from management.role.v2_model import RoleV2
@@ -213,6 +214,10 @@ class ToolConfig:
     passes_request: bool = False
     api_version: str = ApiVersion.COMMON
     write: bool = False
+    required_relation: str | None = None
+    required_resource_type: str = "tenant"
+    v1_permission: tuple[str, str] | None = None
+    caveats: str = ""
 
 
 _TOOL_CONFIG: dict[str, ToolConfig] = {}
@@ -224,6 +229,10 @@ def register_tool(
     requires_auth: bool = False,
     api_version: str = ApiVersion.COMMON,
     write: bool = False,
+    required_relation: str | None = None,
+    required_resource_type: str = "tenant",
+    v1_permission: tuple[str, str] | None = None,
+    caveats: str = "",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Register a tool with both FastMCP and _TOOL_CONFIG.
 
@@ -240,12 +249,20 @@ def register_tool(
         first_param = next(iter(sig.parameters), None)
         passes_request = first_param == "request"
 
+        resolved_caveats = caveats
+        if not resolved_caveats and "Caveats:\n" in description:
+            resolved_caveats = description.split("Caveats:\n", 1)[1].strip()
+
         _TOOL_CONFIG[tool_name] = ToolConfig(
             fn=fn,
             requires_auth=requires_auth,
             passes_request=passes_request,
             api_version=api_version,
             write=write,
+            required_relation=required_relation,
+            required_resource_type=required_resource_type,
+            v1_permission=v1_permission,
+            caveats=resolved_caveats,
         )
 
         if passes_request:
@@ -294,6 +311,9 @@ def _clone_request(
     view_request.user = source.user
     view_request.tenant = getattr(source, "tenant", None)
     view_request.req_id = getattr(source, "req_id", None)
+
+    if getattr(source, "mcp_source", False):
+        view_request.mcp_source = True
 
     identity = source.META.get(RH_IDENTITY_HEADER)
     if identity:
@@ -411,10 +431,18 @@ def hello(message: str = "Hello, World!") -> str:
         "(enabled/disabled/all). Set 'usernames' (comma-separated) to look up specific users. "
         "Set 'match_criteria' to 'exact' (default) or 'partial' for username matching. "
         "Set username_only='true' to return only usernames. "
-        "TROUBLESHOOTING: To confirm a user exists and check their org admin status, call "
+        "Set 'name' to search by display name (e.g., 'RBAC Normal' matches 'RBAC Normal For V2'); "
+        "cannot be used with 'usernames'. "
+        "TROUBLESHOOTING: To find a user by display name, call "
+        "list_principals(name='John Smith'). "
+        "To confirm a user exists and check their org admin status, call "
         "list_principals(usernames='<user>', match_criteria='exact'). "
         "Returns: {meta: {count}, links, data: [{username, email, first_name, last_name, is_org_admin, ...}]}. "
-        "Calls: GET /api/v1/principals/"
+        "Calls: GET /api/v1/principals/\n"
+        "Caveats:\n"
+        "- Shows only users provisioned in this org -- does not include cross-account (TAM) users or "
+        "service accounts from other identity providers.\n"
+        "- 'is_org_admin' reflects the current state from the identity provider, not a historical snapshot."
     ),
     requires_auth=True,
 )
@@ -428,8 +456,20 @@ def list_principals(
     username_only: str = "false",
     usernames: str = "",
     match_criteria: str = "",
+    name: str = "",
 ) -> str:
-    """List principals by delegating to PrincipalView."""
+    """List principals by delegating to PrincipalView, with optional name filtering."""
+    name = name.strip()
+
+    # Reject conflicting inputs
+    if name and usernames:
+        return json.dumps({"errors": [{"detail": "Cannot use both 'name' and 'usernames' parameters"}]})
+
+    # If name filter provided, fetch and filter directly via proxy
+    if name:
+        return _list_principals_by_name(request, name, limit, offset, sort_order, status, username_only)
+
+    # Otherwise, delegate to PrincipalView
     query_params: dict[str, str] = {
         "limit": str(limit),
         "offset": str(offset),
@@ -443,7 +483,103 @@ def list_principals(
         query_params["match_criteria"] = match_criteria
 
     path = reverse("v1_management:principals")
-    return _call_view(request, _principal_view, path, query_params)
+    result = _call_view(request, _principal_view, path, query_params)
+
+    if usernames:
+        try:
+            parsed = json.loads(result)
+            if parsed.get("meta", {}).get("count", 1) == 0:
+                parsed["hint"] = (
+                    f"No users matched the username '{usernames}'. "
+                    f"If this is a display name (e.g. first/last name), "
+                    f"retry with list_principals(name='{usernames}') to search by display name."
+                )
+                return json.dumps(parsed, default=str)
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    return result
+
+
+def _list_principals_by_name(
+    request: HttpRequest,
+    name_filter: str,
+    limit: int,
+    offset: int,
+    sort_order: str,
+    status: str,
+    username_only: str = "false",
+) -> str:
+    """Fetch principals from BOP and filter by name (case-insensitive substring match)."""
+    proxy = PrincipalProxy()
+    org_id = request.user.org_id
+    name_lower = name_filter.lower()
+    return_username_only = username_only.lower() == "true"
+
+    options = {
+        "sort_order": sort_order,
+        "status": status,
+    }
+
+    filtered_users = []
+    bop_offset = 0
+    bop_limit = 500
+    max_users = 2000
+
+    while bop_offset < max_users:
+        resp = proxy.request_principals(org_id=org_id, limit=bop_limit, offset=bop_offset, options=options)
+        if resp.get("status_code") != 200:
+            return json.dumps({"errors": resp.get("errors", [{"detail": "Failed to fetch principals"}])})
+
+        data = resp.get("data", [])
+        if isinstance(data, dict):
+            users = data.get("users", [])
+            total_count = int(data.get("userCount", 0))
+        else:
+            users = data
+            total_count = int(resp.get("userCount", len(users)))
+
+        if not users:
+            break
+
+        for user in users:
+            first = (user.get("first_name") or "").lower()
+            last = (user.get("last_name") or "").lower()
+            full_name = f"{first} {last}".strip()
+            if name_lower in full_name:
+                filtered_users.append(user)
+
+        bop_offset += bop_limit
+        if bop_offset >= total_count:
+            break
+
+    paginated = filtered_users[offset : offset + limit]  # noqa: E203
+    path = request.path
+
+    if return_username_only:
+        paginated = [{"username": u.get("username")} for u in paginated]
+
+    base_params = f"name={name_filter}&sort_order={sort_order}&status={status}&username_only={username_only}"
+
+    return json.dumps(
+        {
+            "meta": {"count": len(filtered_users), "limit": limit, "offset": offset},
+            "links": {
+                "first": f"{path}?{base_params}&limit={limit}&offset=0",
+                "next": (
+                    f"{path}?{base_params}&limit={limit}&offset={offset + limit}"
+                    if offset + limit < len(filtered_users)
+                    else None
+                ),
+                "previous": (
+                    f"{path}?{base_params}&limit={limit}&offset={max(0, offset - limit)}" if offset > 0 else None
+                ),
+                "last": f"{path}?{base_params}&limit={limit}&offset={max(0, len(filtered_users) - limit)}",
+            },
+            "data": paginated,
+        },
+        default=str,
+    )
 
 
 def _call_view(
@@ -547,7 +683,11 @@ def get_status(request: HttpRequest) -> str:
         "Filter by application, resource_type, or verb. Supports pagination and ordering by 'permission' or "
         "'-permission'. "
         "Returns: {meta: {count}, links, data: [{application, resource_type, verb, permission}]}. "
-        "Calls: GET /api/v1/permissions/"
+        "Calls: GET /api/v1/permissions/\n"
+        "Caveats:\n"
+        "- Permissions exist independently of roles. A permission appearing here does not mean any role "
+        "grants it -- use search_roles(permission='...') to find roles that include a specific permission.\n"
+        "- Wildcard permissions ('*') are expanded at access-check time, not in this listing."
     ),
     requires_auth=True,
 )
@@ -597,9 +737,18 @@ def list_permissions(
         "'2025-04-14T09:32:15'), and the description field. When include_authorization=true, also state the "
         "role name (authorized_by.role), "
         "group name (authorized_by.via_group), and specific permission (authorized_by.permission) that "
-        "authorized the action."
+        "authorized the action.\n"
+        "Caveats:\n"
+        "- Does NOT capture: IP addresses, session IDs, login/logout events, geographic location, or "
+        "before/after state diffs. This is an activity log of RBAC changes, not a full security audit trail.\n"
+        "- No server-side date range filter. Time-bounded queries require client-side pagination through "
+        "results ordered by '-created' until entries fall outside the desired window.\n"
+        "- Cross-account request approval/denial events may not appear here -- those are tracked in the "
+        "cross-account-requests API, not the audit log."
     ),
     requires_auth=True,
+    required_relation="rbac_roles_read",
+    v1_permission=("admin", "only"),
 )
 def list_audit_logs(
     request: HttpRequest,
@@ -654,6 +803,7 @@ def list_audit_logs(
                 "resource_type": e.resource_type,
                 "description": e.description,
                 "created": e.created.isoformat() if e.created else None,
+                "source": e.source,
             }
             for e in entries
         ]
@@ -697,6 +847,7 @@ def list_audit_logs(
             "resource_type": entry_resource,
             "description": entry.description,
             "created": entry.created.isoformat() if entry.created else None,
+            "source": entry.source,
             "authorized_by": auth_info,
         }
 
@@ -825,7 +976,11 @@ def _find_authorizing_role(username: str, tenant: Any, required_perms: list[str]
         "granted_subject_type='principal' and granted_subject_principal_user_id='<username>'. "
         "Order by: 'application', 'resource_type', 'verb' (prefix with '-' to reverse). "
         "Returns: {meta: {count}, links, data: [{permission, resourceDefinitions: [...]}]}. "
-        "Calls: GET /api/v1/access/"
+        "Calls: GET /api/v1/access/\n"
+        "Caveats:\n"
+        "- This shows the flattened effective permissions but not the path: you cannot see which "
+        "role or group granted each permission. Use list_group_roles + list_role_access to trace "
+        "the full chain."
     ),
     requires_auth=True,
     api_version=ApiVersion.V1,
@@ -863,7 +1018,12 @@ def list_access(
         "'application', 'resource_type', 'verb'. Optionally filter by application, resource_type, "
         "or verb (comma-separated for multiple). "
         "Returns: {meta: {count}, links, data: ['value1', 'value2', ...]}. "
-        "Calls: GET /api/v1/permissions/options/"
+        "Calls: GET /api/v1/permissions/options/\n"
+        "Caveats:\n"
+        "- Returns values from the permission registry, not from what is actively assigned. An "
+        "application or verb may appear here even if no role in this org currently uses it.\n"
+        "- Application names are identifiers (e.g., 'cost-management', 'advisor'), not display "
+        "names. There is no mapping from these identifiers to user-facing product names."
     ),
     requires_auth=True,
 )
@@ -903,7 +1063,10 @@ def list_permission_options(
         "Filter results by role_name, role_description, role_display_name, or role_system. "
         "Set exclude='true' to list roles NOT in the group. "
         "Order by: 'name', 'display_name', 'modified', 'policyCount' (prefix with '-' to reverse). "
-        "Returns: {meta: {count}, links, data: [{uuid, name, description, system, ...}]}."
+        "Returns: {meta: {count}, links, data: [{uuid, name, description, system, ...}]}.\n"
+        "Caveats:\n"
+        "- Non-org-admin users cannot modify groups that contain roles with RBAC write permissions "
+        "(e.g., 'User Access administrator'). The Default admin access group cannot be modified at all."
     ),
     requires_auth=True,
     api_version=ApiVersion.V1,
@@ -958,7 +1121,13 @@ def list_group_roles(
         "List access permissions granted by a specific role (V1 API). Each access entry is a "
         "permission string with optional resource definitions. "
         "Returns: {meta: {count}, links, data: [{permission, resourceDefinitions: [...]}]}. "
-        "Calls: GET /api/v1/roles/{uuid}/access/"
+        "Calls: GET /api/v1/roles/{uuid}/access/\n"
+        "Caveats:\n"
+        "- This shows what the role grants in isolation. A user's effective access is the union of "
+        "all roles across all their groups -- a missing permission here may be covered by another role.\n"
+        "- No workspace or scope concept in V1. Permissions attach to roles, roles to groups, groups "
+        "to principals -- there is no way to limit a role to a specific workspace or resource subset "
+        "beyond ResourceDefinitions."
     ),
     requires_auth=True,
     api_version=ApiVersion.V1,
@@ -990,10 +1159,17 @@ def list_role_access(
         "To see all roles for an application, call search_roles(application='<app>'). "
         "V2 orgs support name with '*' wildcards (e.g., name='Cost*') and resource_type filter. "
         "V1 orgs additionally support display_name, system flag filters. "
-        "Returns: {meta: {count}, links, data: [{uuid, name, description, ...}], org_version: 'v1'|'v2'}."
+        "Returns: {meta: {count}, links, data: [{uuid, name, description, ...}], org_version: 'v1'|'v2'}.\n"
+        "Caveats:\n"
+        "- The permission filter finds roles containing that permission, but does not account for "
+        "ResourceDefinition filters that may narrow the permission's effective scope.\n"
+        "- Role names are not unique across V1 and V2. The org_version field indicates which API "
+        "version the result came from."
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def search_roles(
     request: HttpRequest,
@@ -1089,6 +1265,8 @@ def _search_roles_v2(
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def get_role(
     request: HttpRequest,
@@ -1140,10 +1318,21 @@ def _get_role_v2(request: HttpRequest, role_uuid: str) -> str:
         "Set include_available_permissions=true to also list what permissions exist in each application "
         "that the role does NOT include. "
         "Returns: {role: {uuid, name, description, system/type}, permissions: {summary, by_application, "
-        "expanded_permissions, verbs_included, verbs_not_included}, coverage_analysis, recommendations, org_version}."
+        "expanded_permissions, verbs_included, verbs_not_included}, coverage_analysis, recommendations, org_version}. "
+        "AFTER ANALYSIS: Present numbered options: "
+        "(1) create a new group and attach the role, ready for user assignment, "
+        "(2) update the role's metadata (e.g. display_name) before assignment, "
+        "(3) add additional permissions to the role. "
+        "Format as 'Reply 1, 2, or 3 -- or no'. Do NOT execute write tools without explicit user selection.\n"
+        "Caveats:\n"
+        "- Permission names are naming conventions only -- RBAC cannot confirm what UI elements "
+        "or API endpoints they control.\n"
+        "- ResourceDefinition filters are stored but enforced by the consuming application, not RBAC."
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def check_role_permissions(
     request: HttpRequest,
@@ -1424,7 +1613,13 @@ def list_groups(
         "Get details of a specific group by UUID, including its name, description, "
         "principal count, policy count, and role count. "
         "Returns: {uuid, name, description, principalCount, policyCount, roleCount, ...}. "
-        "Calls: GET /api/v1/groups/{uuid}/"
+        "Calls: GET /api/v1/groups/{uuid}/\n"
+        "Caveats:\n"
+        "- The 'Default access' group is a system group that all users belong to implicitly. "
+        "Its principalCount may not reflect the full org size, and its roles define the baseline "
+        "permissions every user gets.\n"
+        "- Group membership changes are not versioned. You see the current state, not a history "
+        "of who was added or removed. Use list_audit_logs for membership change history."
     ),
     requires_auth=True,
 )
@@ -1479,7 +1674,14 @@ def list_group_principals(
         "Order by: 'request_id', 'start_date', 'end_date', 'created', 'modified', "
         "'status' (prefix with '-' to reverse). "
         "Returns: {meta: {count}, links, data: [{request_id, target_account, status, start_date, end_date, ...}]}. "
-        "Calls: GET /api/v1/cross-account-requests/"
+        "Calls: GET /api/v1/cross-account-requests/\n"
+        "Caveats:\n"
+        "- Cross-account requests are org-to-org, not user-to-user. A TAM requests access to your "
+        "entire org's resources (scoped by the roles they are granted), not to a specific user's data.\n"
+        "- Approved requests have a time window (start_date to end_date). An 'approved' request may "
+        "have expired -- check end_date against the current date to confirm active access.\n"
+        "- Cross-account activity is not tracked in RBAC audit logs.\n"
+        "- Only org admins can approve or deny requests -- regular users can view but not act on them."
     ),
     requires_auth=True,
 )
@@ -1544,10 +1746,16 @@ def get_cross_account_request(
         "Set 'required_permission' to check if a specific permission is granted (e.g., "
         "'subscriptions:watch:read'). The tool will report whether that permission is present. "
         "Returns: {requests: [{request_id, status, end_date, days_remaining, requester_info, "
-        "roles: [{name, permissions: [...]}], permission_summary}], analysis}."
+        "roles: [{name, permissions: [...]}], permission_summary}], analysis}. "
+        "AFTER ANALYSIS: Present numbered options: "
+        "(1) update the cross-account request with an expanded roles list, "
+        "(2) deny the current request and ask the TAM to resubmit with the correct scope (cleaner audit trail). "
+        "Format as 'Reply 1 or 2 -- or no'. Do NOT execute write tools without explicit user selection."
     ),
     requires_auth=True,
     api_version=ApiVersion.COMMON,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def investigate_tam_access(
     request: HttpRequest,
@@ -1748,10 +1956,17 @@ def investigate_tam_access(
         "Set audit_days to control how far back to look in audit logs (default 30 days). "
         "Returns: {active_access: [{user_info, roles, permissions, expires, days_remaining, "
         "audit_activity: {total_actions, recent_actions, summary}}], summary: {total_users, "
-        "expiring_soon, unused_access}}."
+        "expiring_soon, unused_access}}. "
+        "AFTER ANALYSIS: Present numbered options: "
+        "(1) cancel unused cross-account access (requests with no audit log activity), "
+        "(2) format the full report for a CISO briefing, "
+        "(3) both. "
+        "Format as 'Reply 1, 2, or 3 -- or no'. Do NOT execute write tools without explicit user selection."
     ),
     requires_auth=True,
     api_version=ApiVersion.COMMON,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def audit_redhat_access(
     request: HttpRequest,
@@ -1961,10 +2176,17 @@ def audit_redhat_access(
         "roles: [{name, permissions}], analysis: {stranded_users, stranded_service_accounts, ...}}. "
         "STRANDED means the member is ONLY in this group plus platform_default — they'd be demoted "
         "to default access only. Service accounts with no other groups would start 403'ing. "
-        "Queries: Group, Principal, Policy, Role, Access models directly (no per-member API calls)"
+        "Queries: Group, Principal, Policy, Role, Access models directly (no per-member API calls). "
+        "AFTER ANALYSIS: Present numbered options: "
+        "(1) delete the group immediately (warn about stranded users/service accounts), "
+        "(2) create a transition group with the same roles, move stranded members, then delete the original, "
+        "(3) remove only covered users from the group, leave it intact for manual review. "
+        "Format as 'Reply 1, 2, or 3 -- or no'. Do NOT execute write tools without explicit user selection."
     ),
     requires_auth=True,
     api_version=ApiVersion.COMMON,
+    required_relation="rbac_roles_read",
+    v1_permission=("group", "read"),
 )
 def audit_group_for_dissolution(
     request: HttpRequest,
@@ -2377,10 +2599,18 @@ def _permission_matches(granted_permission: str, requested_permission: str) -> b
         "Returns: {allowed: bool, username, permission, matched_permission, ...} "
         "or {allowed: false, hint: str}. "
         "V1 calls: GET /api/v1/access/?username=X&application=Y (internally). "
-        "V2 resolves: role bindings → roles → permissions (internally)."
+        "V2 resolves: role bindings → roles → permissions (internally).\n"
+        "Caveats:\n"
+        "- Org admins bypass all RBAC checks; this tool returns only explicitly assigned permissions, "
+        "not their effective unlimited access.\n"
+        "- ResourceDefinition filters are stored but enforced by the consuming application, not RBAC.\n"
+        "- Permission names are naming conventions only -- RBAC cannot confirm what UI elements "
+        "or API endpoints they control."
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("principal", "read"),
 )
 def check_user_permission(
     request: HttpRequest,
@@ -2553,10 +2783,17 @@ def _check_user_permission_v1(request: HttpRequest, username: str, permission: s
         "Audit log: <N> actions performed by user on <groups> (action types).'. "
         "Returns: {username, org_version, groups: [{name, roles, recent_activity}], "
         "access: [{permission, role_name, ...}], user_actions: {total_count, by_group, by_type, recent}, "
-        "summary: {group_count, permission_count, actions_by_user, recent_actions_on_groups}}."
+        "summary: {group_count, permission_count, actions_by_user, recent_actions_on_groups}}.\n"
+        "Caveats:\n"
+        "- Org admins have implicit full access that bypasses all RBAC checks; "
+        "this is not reflected in the returned data.\n"
+        "- Permission names are naming conventions only -- RBAC cannot confirm what UI elements "
+        "or API endpoints they control."
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("principal", "read"),
 )
 def get_user_state(
     request: HttpRequest,
@@ -2806,9 +3043,13 @@ def _get_user_access_v1(request: HttpRequest, username: str) -> list[dict[str, A
         "RESPONSE FORMAT: Consolidate by actor. For each actor: '<actor>: <count> <action> actions on "
         "<resource_type> (<day of week>). <actor> holds <role name if known>.' "
         "Note patterns like 'Matches expected automation pattern' for service accounts. "
-        "Format dates as day of week (Monday, Tuesday, etc.), not ISO timestamps."
+        "Format dates as day of week (Monday, Tuesday, etc.), not ISO timestamps. "
+        "AFTER ANALYSIS: This is a review-only tool. Present the summary and let the user ask follow-up questions. "
+        "Do NOT offer write-action suggestions."
     ),
     requires_auth=True,
+    required_relation="rbac_roles_read",
+    v1_permission=("admin", "only"),
 )
 def get_rbac_recent_changes(
     request: HttpRequest,
@@ -2907,6 +3148,8 @@ def get_rbac_recent_changes(
         "rbac:group:write.'"
     ),
     requires_auth=True,
+    required_relation="rbac_roles_read",
+    v1_permission=("group", "read"),
 )
 def investigate_group_changes(
     request: HttpRequest,
@@ -3188,10 +3431,24 @@ def _analyze_expected_permission(
         "RBAC is additive, so users get the most permissive access from all their memberships. "
         "Common causes: role doesn't contain the assumed permission, group doesn't have the expected role. "
         "V1 RETURNS: {user, org_version, groups: [{roles: [{permissions}]}], effective_access, analysis}. "
-        "V2 RETURNS: {user, org_version, groups, role_bindings: [{role: {permissions}}], effective_access, analysis}."
+        "V2 RETURNS: {user, org_version, groups, role_bindings: [{role: {permissions}}], effective_access, analysis}. "
+        "AFTER ANALYSIS: Present numbered remediation options: "
+        "(1) add a role containing the missing permission to the user's group, "
+        "(2) create a new custom role with the missing permission and add it to the group, "
+        "(3) do nothing -- audit the role definition first. "
+        "Format as 'Reply 1, 2, or 3 -- or no'. Do NOT execute write tools without explicit user selection.\n"
+        "Caveats:\n"
+        "- Org admins bypass all RBAC checks; this tool returns only explicitly assigned permissions, "
+        "not their effective unlimited access.\n"
+        "- In V1, roles are assigned to groups -- roles cannot be assigned directly to users. "
+        "In V2, roles are bound to subjects via role bindings, which can target individual users.\n"
+        "- Permission names are naming conventions only -- RBAC cannot confirm what UI elements "
+        "or API endpoints they control."
     ),
     requires_auth=True,
     api_version=ApiVersion.COMMON,
+    required_relation="rbac_roles_read",
+    v1_permission=("principal", "read"),
 )
 def investigate_user_access(
     request: HttpRequest,
@@ -3944,6 +4201,8 @@ def create_cross_account_request(
     ),
     requires_auth=True,
     api_version=ApiVersion.UNIFIED,
+    required_relation="rbac_roles_read",
+    v1_permission=("role", "read"),
 )
 def guide_user_access_delegation(
     request: HttpRequest,
@@ -4703,33 +4962,65 @@ _MCP_INSTRUCTIONS_BASE = (
     "roles, audit logs, and cross-account access."
 )
 
-_MCP_INSTRUCTIONS_SUGGESTION_LAYER = (
-    "\n\n## Suggestion Layer\n\n"
-    "After completing a readonly analysis, present the user with numbered write-action "
-    "options they can select from. Format suggestions as:\n\n"
-    '"Want me to: (1) <action>, or (2) <action>, or (3) <action>? '
-    "Reply 1, 2, or 3 -- or 'no'.\"\n\n"
-    "Guidelines:\n"
-    "- Always include a 'do nothing' or 'audit first' option when the action is irreversible.\n"
-    "- For permission gaps: offer to add the user to an existing group with the right role, "
-    "create a narrow custom role, or add the role to the user's current group.\n"
-    "- For group dissolution: offer immediate deletion, a transition group for stranded members, "
+_MCP_INSTRUCTIONS_HONEST_CAVEATS = (
+    "\n\n## Honest Caveats\n\n"
+    "After answering any question, proactively surface what the API response does NOT cover. "
+    "If the user's question requires data from multiple tools, explain which additional calls "
+    "are needed rather than presenting partial data as complete.\n\n"
+    "Cross-cutting limitations to keep in mind:\n\n"
+    "1. **Permission-to-UI mapping does not exist.** RBAC defines permission strings "
+    "(e.g., 'cost-management:cost_model:write') but the consuming application determines "
+    "what UI elements or API endpoints each permission unlocks. Permission names are naming "
+    "conventions only -- RBAC cannot confirm what they control.\n\n"
+    "2. **ResourceDefinition filters are opaque.** The 'resourceDefinitions' array on access "
+    "entries scopes permissions to specific resources, but RBAC only stores the filter -- the "
+    "consuming application enforces it. RBAC cannot tell you which concrete resources a filter "
+    "matches.\n\n"
+    "3. **Org admins have implicit full access.** Org admins bypass all RBAC checks. Tools "
+    "like list_access return only explicitly assigned permissions, not the effective (unlimited) "
+    "access org admins actually have. When a user is an org admin, clarify that their effective "
+    "access is unrestricted regardless of what the API returns.\n\n"
+    "4. **V1 vs V2 role assignment model.** In V1, roles are assigned to groups and users are "
+    "added to those groups -- roles cannot be assigned directly to users. In V2, roles are "
+    "bound to subjects via role bindings, which can target individual users directly. When "
+    "advising on role assignment, check the org's API version (org_version field) to give "
+    "accurate guidance."
+)
+
+_MCP_INSTRUCTIONS_REMEDIATION = (
+    "\n\n## Remediation Guidance\n\n"
+    "After completing a readonly analysis that reveals a problem (permission gap, stale membership, "
+    "unauthorized change, etc.), always suggest concrete next steps the user or an admin can take "
+    "to resolve it. Present remediation as numbered options:\n\n"
+    '"To fix this you could: (1) <action>, (2) <action>, or (3) <action>."\n\n'
+    "Scenario-specific guidance:\n"
+    "- **Permission gaps**: suggest (a) adding the user to an existing group that already has "
+    "the right role, (b) creating a narrow custom role with just the needed permissions, or "
+    "(c) adding the missing role to the user's current group.\n"
+    "- **Group dissolution**: suggest immediate deletion, a transition group for stranded members, "
     "or partial cleanup.\n"
-    "- For audit investigations: offer to remove unauthorized changes, revoke the actor's access, "
+    "- **Audit investigations**: suggest removing unauthorized changes, revoking the actor's access, "
     "or both.\n"
-    "- For offboarding: offer to remove the user from groups, generate a report, or both.\n"
-    "- For cross-account access: offer to update or cancel requests, or generate a briefing report.\n"
-    "- For review-only scenarios (e.g., summarizing recent changes): do NOT offer write actions. "
-    "Present the summary and let the user ask follow-up questions.\n"
-    "- NEVER execute a write tool without the user explicitly selecting an option."
+    "- **Offboarding**: suggest removing the user from groups, generating a report, or both.\n"
+    "- **Cross-account access**: suggest updating or cancelling requests, or generating a briefing report.\n"
+    "- **Review-only scenarios** (e.g., summarizing recent changes): do NOT suggest write actions. "
+    "Present the summary and let the user ask follow-up questions.\n\n"
+    "Always include a 'do nothing / audit first' option when the action is irreversible."
+)
+
+_MCP_INSTRUCTIONS_WRITE_ACTIONS = (
+    "\n\n## Write Actions\n\n"
+    "Write tools are enabled. When presenting remediation options, offer to execute them directly. "
+    "Format as: \"Want me to do this now? Reply 1, 2, or 3 -- or 'no'.\"\n\n"
+    "NEVER execute a write tool without the user explicitly selecting an option."
 )
 
 
 def _build_mcp_instructions() -> str:
     """Build MCP server instructions based on current feature flags."""
-    parts = [_MCP_INSTRUCTIONS_BASE]
+    parts = [_MCP_INSTRUCTIONS_BASE, _MCP_INSTRUCTIONS_HONEST_CAVEATS, _MCP_INSTRUCTIONS_REMEDIATION]
     if _is_write_enabled():
-        parts.append(_MCP_INSTRUCTIONS_SUGGESTION_LAYER)
+        parts.append(_MCP_INSTRUCTIONS_WRITE_ACTIONS)
     return "".join(parts)
 
 
@@ -4835,6 +5126,61 @@ def _execute_with_timeout(fn: Callable[..., Any], timeout: int, *args: Any, **kw
         raise ToolTimeoutError(f"Tool execution exceeded {timeout}s timeout")
 
 
+def _check_v1_access(request: HttpRequest, v1_permission: tuple[str, str]) -> bool:
+    """Check v1 RBAC permission for the requesting user.
+
+    Args:
+        request: The Django HTTP request with user context populated by middleware.
+        v1_permission: A (resource_type, verb) tuple, e.g. ("role", "read").
+            Use ("admin", "only") to require org admin with no access-dict fallback.
+
+    Returns True if access is granted, False otherwise.
+    """
+    user = getattr(request, "user", None)
+    if not user:
+        return False
+
+    if getattr(user, "admin", False):
+        return True
+
+    resource_type, verb = v1_permission
+    if resource_type == "admin":
+        return False
+
+    access = getattr(user, "access", {})
+    return bool(access.get(resource_type, {}).get(verb, []))
+
+
+def _check_kessel_access(request: HttpRequest, resource_type: str, relation: str) -> bool:
+    """Check Kessel Inventory API permission for the requesting user.
+
+    Returns True if access is granted, False otherwise. Fails closed on
+    missing tenant, missing principal ID, or Inventory API errors.
+    """
+    try:
+        tenant = getattr(request, "tenant", None)
+        if not tenant:
+            return False
+
+        resource_id = tenant.tenant_resource_id()
+        if not resource_id:
+            return False
+
+        principal_id = get_kessel_principal_id(request)
+        if not principal_id:
+            return False
+
+        return WorkspaceInventoryAccessChecker().check_resource_access(
+            resource_type=resource_type,
+            resource_id=resource_id,
+            principal_id=principal_id,
+            relation=relation,
+        )
+    except Exception:
+        logger.exception("mcp: Kessel access check failed unexpectedly")
+        return False
+
+
 def _handle_tools_call(request: HttpRequest, request_id: Any, params: dict[str, Any]) -> JsonResponse:
     """Handle MCP tools/call request.
 
@@ -4892,6 +5238,27 @@ def _handle_tools_call(request: HttpRequest, request_id: Any, params: dict[str, 
             _record_metric(tool_name, "auth_error")
             return _error_response(request_id, -32000, "Authentication required")
 
+    if config.write:
+        request.mcp_source = True
+
+    if config.required_relation:
+        tenant = getattr(request, "tenant", None)
+        if tenant and is_v2_write_activated(tenant):
+            access_granted = _check_kessel_access(request, config.required_resource_type, config.required_relation)
+        elif config.v1_permission:
+            access_granted = _check_v1_access(request, config.v1_permission)
+        else:
+            access_granted = False
+        if not access_granted:
+            logger.warning(
+                "mcp: tools/call tool='%s' rejected, permission denied (relation=%s, resource_type=%s)",
+                tool_name,
+                config.required_relation,
+                config.required_resource_type,
+            )
+            _record_metric(tool_name, "permission_denied")
+            return _error_response(request_id, -32003, "Permission denied")
+
     track = tool_name != "hello"
     start = time.monotonic() if track else 0
     timeout = getattr(settings, "MCP_TOOL_TIMEOUT_SECONDS", 30)
@@ -4913,7 +5280,13 @@ def _handle_tools_call(request: HttpRequest, request_id: Any, params: dict[str, 
             _record_metric(tool_name, "success", duration)
             logger.info("mcp: tools/call tool='%s' completed in %.3fs", tool_name, duration)
 
-        content = [{"type": "text", "text": _normalize_tool_result(result)}]
+        result_text = _normalize_tool_result(result)
+        content = [{"type": "text", "text": result_text}]
+        if config.caveats:
+            content.append(
+                {"type": "text", "text": f"IMPORTANT — INCLUDE THESE CAVEATS IN YOUR ANSWER:\n{config.caveats}"}
+            )
+
         return _success_response(request_id, {"content": content, "isError": False})
     except ToolTimeoutError:
         duration = time.monotonic() - start if track else timeout
