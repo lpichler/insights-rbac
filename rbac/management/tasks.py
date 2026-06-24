@@ -666,6 +666,12 @@ def run_disaster_recovery_reconcile(
     if not getattr(settings, "DR_RELATIONS_RECONCILE_ENABLED", False):
         return {"message": "Disaster recovery reconciliation is disabled"}
 
+    if not getattr(settings, "KAFKA_ENABLED", False):
+        return {"message": "Disaster recovery reconciliation requires Kafka (KAFKA_ENABLED=False)"}
+
+    if not getattr(settings, "RBAC_KAFKA_CONSUMER_TOPIC", None):
+        return {"message": "Disaster recovery reconciliation requires RBAC_KAFKA_CONSUMER_TOPIC to be configured"}
+
     try:
         from management.disaster_recovery.service import reconcile
 

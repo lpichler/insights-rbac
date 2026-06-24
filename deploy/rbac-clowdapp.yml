@@ -213,6 +213,10 @@ objects:
             value: ${DR_RELATIONS_RECONCILE_ENABLED}
           - name: DR_WORKSPACE_RECONCILE_ENABLED
             value: ${DR_WORKSPACE_RECONCILE_ENABLED}
+          - name: RBAC_KAFKA_CONSUMER_TOPIC
+            value: ${RBAC_KAFKA_CONSUMER_TOPIC}
+          - name: DR_KAFKA_CONSUMER_GROUP_ID
+            value: ${DR_KAFKA_CONSUMER_GROUP_ID}
           - name: CELERY_WORKER_CONCURRENCY
             value: ${CELERY_WORKER_CONCURRENCY}
           - name: NOTIFICATIONS_TOPIC
@@ -1726,6 +1730,9 @@ parameters:
 - description: Enable disaster recovery workspace recovery endpoint and Celery task
   name: DR_WORKSPACE_RECONCILE_ENABLED
   value: 'False'
+- description: Kafka consumer group ID for DR reconciliation reader
+  name: DR_KAFKA_CONSUMER_GROUP_ID
+  value: 'rbac-dr-consumer-group'
 - name: EXTERNAL_SYNC_TOPIC
   value: 'platform.rbac.sync'
 - name: EXTERNAL_CHROME_TOPIC
