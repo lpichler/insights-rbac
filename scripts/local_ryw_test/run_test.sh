@@ -330,16 +330,17 @@ print(f'{b}B' if b<1024 else f'~{b/1024:.2f}K' if b<1048576 else f'~{b/1048576:.
 " 2>/dev/null || true
     }
 
-    local metrics=("Connector:connector:CP_CONNECTOR"
-                   "snapshot.mode:snapshot:CP_SNAPSHOT_MODE"
-                   "Slot LSN (flushed):slot:CP_SLOT:lsn"
-                   "WAL Position:slot:CP_WAL:lsn"
-                   "Offset lsn:offset:CP_OFFSET_LSN:lsn"
-                   "Offset lsn_proc:offset:CP_OFFSET_LSN_PROC:lsn"
-                   "Offset lsn_commit:offset:CP_OFFSET_LSN_COMMIT:lsn"
-                   "Consumer Offset:consumer:CP_CONSUMER")
+    # format: "Label:colorkey:array:fmt:source"
+    local metrics=("Connector:connector:CP_CONNECTOR::Connect REST API /connectors/status"
+                   "snapshot.mode:snapshot:CP_SNAPSHOT_MODE::Connect REST API /connectors/config"
+                   "Slot LSN (flushed):slot:CP_SLOT:lsn:PostgreSQL pg_replication_slots.confirmed_flush_lsn"
+                   "WAL Position:slot:CP_WAL:lsn:PostgreSQL pg_current_wal_lsn()"
+                   "Offset lsn:offset:CP_OFFSET_LSN:lsn:Kafka Connect /connectors/offsets or connect-offsets topic"
+                   "Offset lsn_proc:offset:CP_OFFSET_LSN_PROC:lsn:Kafka Connect /connectors/offsets or connect-offsets topic"
+                   "Offset lsn_commit:offset:CP_OFFSET_LSN_COMMIT:lsn:Kafka Connect /connectors/offsets or connect-offsets topic"
+                   "Consumer Offset:consumer:CP_CONSUMER::Kafka consumer-groups --describe (CURRENT-OFFSET)")
     for entry in "${metrics[@]}"; do
-        IFS=: read -r label metric arr fmt <<< "$entry"
+        IFS=: read -r label metric arr fmt source <<< "$entry"
         local ref="${arr}[$i]"
         local val="${!ref}"
         if [ "$fmt" = "lsn" ] && [[ "$val" =~ ^[0-9A-Fa-f]+/[0-9A-Fa-f]+$ ]]; then
@@ -347,10 +348,10 @@ print(f'{b}B' if b<1024 else f'~{b/1024:.2f}K' if b<1048576 else f'~{b/1048576:.
             pretty=$(_lsn_pretty "$val") || true
             [ -n "$pretty" ] && val="${val} (${pretty})"
         fi
-        printf "  %-20s %b\n" "$label" "$(_c "$val" "$metric")"
+        printf "  %-20s %b  ${DIM}← %s${NC}\n" "$label" "$(_c "$val" "$metric")" "$source"
     done
 
-    # Replication Lag = WAL Position - Slot LSN
+    # Replication Lag = WAL Position - Slot LSN (computed, not from any single source)
     local ref_wal="CP_WAL[$i]" ref_slot="CP_SLOT[$i]"
     local wal_val="${!ref_wal}" slot_val="${!ref_slot}"
     local lag="n/a"
@@ -361,7 +362,7 @@ d=(int(w[0],16)<<32|int(w[1],16))-(int(s[0],16)<<32|int(s[1],16))
 print('0 B' if d==0 else f'{d} B' if d<1024 else f'{d/1024:.1f} KB' if d<1048576 else f'{d/1048576:.1f} MB')
 " 2>/dev/null) || lag="n/a"
     fi
-    printf "  %-20s %b\n" "Replication Lag" "$(_c "$lag" "lag")"
+    printf "  %-20s %b  ${DIM}← WAL Position − Slot LSN${NC}\n" "Replication Lag" "$(_c "$lag" "lag")"
 
     printf "  "; printf '─%.0s' $(seq 1 50); echo
     echo
@@ -1407,71 +1408,68 @@ case "${1:-}" in
         _run "Phase 2: Starting API server..." start_api_server
         _run "Phase 2: Starting Kafka consumer..." start_kafka_consumer
 
-        # Phase 3-4: Init test
+        # Phase 3: Pipeline test (create, backup, delete, create)
         sleep 3
-        _run "Phase 3: Running init test (3 workspaces)..." run_test
-        _run "Phase 4: Collecting logs..." show_logs
-        _run "Phase 4: Running diagnostics..." show_diagnostics
+        _run "Phase 3a: Creating 3 workspaces..." run_test
+        _run "Phase 3b: Backing up database for later restore..." backup_database
+        _run "Phase 3c+3d: Deleting 2 + creating 2 workspaces..." run_phase2
+        _run "Phase 3: Collecting logs..." show_logs
+        _run "Phase 3: Running diagnostics..." show_diagnostics
 
         if [ "$CHECKPOINTS_ONLY" != true ]; then
             echo
             success "========================================="
-            success "  Init setup complete"
+            success "  Pipeline test complete"
             success "========================================="
             echo
         fi
 
-        # Phase 5-7: Backup, phase 2 test, diagnostics
-        _run "Phase 5: Backing up database..." backup_database
-        _run "Phase 6: Running phase 2 test..." run_phase2
-        _run "Phase 7: Post-test diagnostics..." show_diagnostics
-
         # ── CP1: Everything healthy before disaster ──
-        capture_checkpoint "Healthy" "Phase 7"
+        capture_checkpoint "Healthy" "Phase 3"
 
-        # Phase 8: Stop DB only — connector stays registered
-        _run "Phase 8: Stopping database..." stop_database
+        # Phase 4: Stop DB only — connector stays registered
+        _run "Phase 4: Stopping database..." stop_database
 
-        # Phase 9: Restore database from backup + drop stale slot
-        _run "Phase 9: Restoring database from backup..." restore_database "$LAST_BACKUP_FILE"
-        _run "Phase 9: Dropping stale replication slot..." drop_replication_slot
-        _run "Phase 9: Waiting for connector to detect missing slot (15s)..." sleep 15
-        _run "Phase 9: Checking connector status..." check_debezium_running
+        # Phase 5: Restore database from backup + drop stale slot
+        _run "Phase 5: Restoring database from backup..." restore_database "$LAST_BACKUP_FILE"
+        _run "Phase 5: Dropping stale replication slot..." drop_replication_slot
+        _run "Phase 5: Waiting for connector to detect missing slot (15s)..." sleep 15
+        _run "Phase 5: Checking connector status..." check_debezium_running
 
         # ── CP2: DB restored, slot dropped, connector FAILED ──
-        capture_checkpoint "DB restored" "Phase 9"
+        capture_checkpoint "DB restored" "Phase 5"
 
-        # Phase 10: Delete the failed connector
-        _run "Phase 10: Deleting failed connector..." stop_debezium_connector
+        # Phase 6: Delete the failed connector
+        _run "Phase 6: Deleting failed connector..." stop_debezium_connector
 
         # ── CP3: Connector deleted, stale offset stays in Kafka ──
-        capture_checkpoint "Conn deleted" "Phase 10"
+        capture_checkpoint "Conn deleted" "Phase 6"
 
-        # Phase 11: Recreate connector (default config) → FAILS again
-        _run "Phase 11: Recreating connector (default config)..." start_debezium_connector
-        _run "Phase 11: Waiting for connector to fail (15s)..." sleep 15
-        _run "Phase 11: Checking connector status..." check_debezium_running
+        # Phase 7: Recreate connector (default config) → FAILS again
+        _run "Phase 7: Recreating connector (default config)..." start_debezium_connector
+        _run "Phase 7: Waiting for connector to fail (15s)..." sleep 15
+        _run "Phase 7: Checking connector status..." check_debezium_running
 
         # ── CP4: Recreated but FAILED (stale LSN, no slot) ──
-        capture_checkpoint "Conn recreated" "Phase 11"
+        capture_checkpoint "Conn recreated" "Phase 7"
 
-        # Phase 12: Fix — recover with Kafka Connect 3.6+ offset reset API (KIP-875)
-        _run "Phase 12: Recovering with Kafka Connect 3.6+ offset reset..." recover_debezium_connector
+        # Phase 8: Fix — recover with Kafka Connect 3.6+ offset reset API (KIP-875)
+        _run "Phase 8: Recovering with Kafka Connect 3.6+ offset reset..." recover_debezium_connector
 
         # ── CP5: Fixed with offset reset (stop → delete offsets → resume) ──
-        capture_checkpoint "Fixed" "Phase 12"
+        capture_checkpoint "Fixed" "Phase 8"
 
-        # Phase 13: Create data to prove the pipeline is live
-        _run "Phase 13: Creating 2 workspaces to trigger CDC pipeline..." \
+        # Phase 9: Create data to prove the pipeline is live
+        _run "Phase 9: Creating 2 workspaces to trigger CDC pipeline..." \
             $PYTHON scripts/local_ryw_test/test_ryw.py \
                 --api-url http://localhost:8000 \
                 --db-host localhost \
                 --db-port 15432 \
                 --count 2
-        _run "Phase 13: Waiting for Debezium to flush new offset (10s)..." sleep 10
+        _run "Phase 9: Waiting for Debezium to flush new offset (10s)..." sleep 10
 
         # ── CP6: Offset Topic LSN should have advanced (old entry superseded) ──
-        capture_checkpoint "New data" "Phase 13"
+        capture_checkpoint "New data" "Phase 9"
 
         echo
         info "Services are still running. Use '$0 --clean' to stop everything."
