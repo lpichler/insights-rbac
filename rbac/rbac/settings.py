@@ -445,6 +445,7 @@ ROLE_CREATE_ALLOW_LIST = ENVIRONMENT.get_value("ROLE_CREATE_ALLOW_LIST", default
 
 # Dual write migration configuration
 REPLICATION_TO_RELATION_ENABLED = ENVIRONMENT.bool("REPLICATION_TO_RELATION_ENABLED", default=False)
+EPH_ENV = ENVIRONMENT.bool("EPH_ENV", default=False)
 V2_MIGRATION_APP_EXCLUDE_LIST = ENVIRONMENT.get_value("V2_MIGRATION_APP_EXCLUDE_LIST", default="").split(",")
 V2_BOOTSTRAP_TENANT = ENVIRONMENT.bool("V2_BOOTSTRAP_TENANT", default=False)
 
@@ -685,6 +686,11 @@ WORKSPACE_ACCESS_TIMING_ENABLED = ENVIRONMENT.bool("WORKSPACE_ACCESS_TIMING_ENAB
 ROOT_SCOPE_PERMISSIONS = ENVIRONMENT.get_value("ROOT_SCOPE_PERMISSIONS", default="")
 TENANT_SCOPE_PERMISSIONS = ENVIRONMENT.get_value("TENANT_SCOPE_PERMISSIONS", default="")
 DEFAULT_SCOPE_PERMISSIONS = ENVIRONMENT.get_value("DEFAULT_SCOPE_PERMISSIONS", default="")
+
+# Whether to enable automatic scope migration during seeding. (This is intended to allow the migrations to be run
+# manually before enabling the automatic runs, thus preventing the migration running sequentially for all roles on the
+# first seeding run after the feature is added.)
+AUTOMATIC_SCOPE_MIGRATION_ENABLED = ENVIRONMENT.bool("AUTOMATIC_SCOPE_MIGRATION_ENABLED", default=False)
 
 # Parity check settings - background job for comparing RBAC access with Kessel PDP
 PARITY_CHECK_ENABLED = ENVIRONMENT.bool("PARITY_CHECK_ENABLED", default=False)
