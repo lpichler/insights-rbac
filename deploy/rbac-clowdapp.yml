@@ -213,6 +213,10 @@ objects:
             value: ${DR_RELATIONS_RECONCILE_ENABLED}
           - name: DR_WORKSPACE_RECONCILE_ENABLED
             value: ${DR_WORKSPACE_RECONCILE_ENABLED}
+          - name: RBAC_KAFKA_CONSUMER_TOPIC
+            value: ${RBAC_KAFKA_CONSUMER_TOPIC}
+          - name: DR_KAFKA_CONSUMER_GROUP_ID
+            value: ${DR_KAFKA_CONSUMER_GROUP_ID}
           - name: CELERY_WORKER_CONCURRENCY
             value: ${CELERY_WORKER_CONCURRENCY}
           - name: NOTIFICATIONS_TOPIC
@@ -249,6 +253,8 @@ objects:
             value: ${REDHAT_SSO}
           - name: REPLICATION_TO_RELATION_ENABLED
             value: ${REPLICATION_TO_RELATION_ENABLED}
+          - name: EPH_ENV
+            value: ${EPH_ENV}
           - name: PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB
             value: ${PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB}
           - name: V2_MIGRATION_APP_EXCLUDE_LIST
@@ -561,6 +567,8 @@ objects:
             value: ${SA_NAME}
           - name: REPLICATION_TO_RELATION_ENABLED
             value: ${REPLICATION_TO_RELATION_ENABLED}
+          - name: EPH_ENV
+            value: ${EPH_ENV}
           - name: PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB
             value: ${PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB}
           - name: V2_MIGRATION_APP_EXCLUDE_LIST
@@ -779,6 +787,8 @@ objects:
             value: ${RBAC_KAFKA_CUSTOM_CONSUMER_BROKER}
           - name: REPLICATION_TO_RELATION_ENABLED
             value: ${REPLICATION_TO_RELATION_ENABLED}
+          - name: EPH_ENV
+            value: ${EPH_ENV}
           - name: RELATION_API_SERVER
             value: ${RELATION_API_SERVER}
           # Relations API variables
@@ -1726,6 +1736,9 @@ parameters:
 - description: Enable disaster recovery workspace recovery endpoint and Celery task
   name: DR_WORKSPACE_RECONCILE_ENABLED
   value: 'False'
+- description: Kafka consumer group ID for DR reconciliation reader
+  name: DR_KAFKA_CONSUMER_GROUP_ID
+  value: 'rbac-dr-consumer-group'
 - name: EXTERNAL_SYNC_TOPIC
   value: 'platform.rbac.sync'
 - name: EXTERNAL_CHROME_TOPIC
@@ -1814,6 +1827,9 @@ parameters:
 - name: REPLICATION_TO_RELATION_ENABLED
   description: Enable replication to Relation API
   value: "True"
+- name: EPH_ENV
+  description: Flag indicating deployment is in an ephemeral environment
+  value: 'False'
 - name: MCP_ENABLED
   description: Flag to enable the MCP (Model Context Protocol) agent-to-service endpoint. Set to False to fully disable the MCP server.
   value: 'False'
