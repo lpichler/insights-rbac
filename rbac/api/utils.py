@@ -131,9 +131,15 @@ def delete_tenant_with_resources(tenant):
     Uses migration_resource_deletion to properly handle workspace deletion
     (children before parents due to PROTECT constraints).
 
+    Cache invalidation happens AFTER deletion to avoid the race condition
+    where concurrent readers could re-populate the cache with stale data
+    between cache clear and actual deletion.
+
     Args:
         tenant: Tenant object to delete
     """
+    org_id = tenant.org_id
+
     # Delete workspaces first (handles children-before-parents automatically)
     workspaces = Workspace.objects.filter(tenant=tenant).order_by("id")
     # Delete workspaces without children first (due to PROTECT on parent)
@@ -144,6 +150,12 @@ def delete_tenant_with_resources(tenant):
 
     # Now tenant can be safely deleted (all workspaces are gone)
     tenant.delete()
+
+    # Invalidate workspace cache after deletion to prevent stale re-population
+    if org_id:
+        from management.cache import WORKSPACE_CACHE
+
+        WORKSPACE_CACHE.delete_workspaces_for_tenant(org_id)
 
 
 def chunk_delete(queryset):

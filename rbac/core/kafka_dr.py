@@ -54,7 +54,16 @@ def _create_consumer(group_id: str = DR_CONSUMER_GROUP) -> KafkaConsumer:
 
     kafka_auth = getattr(settings, "KAFKA_AUTH", None)
     if kafka_auth:
-        kwargs.update(kafka_auth)
+        for key in (
+            "bootstrap_servers",
+            "sasl_plain_username",
+            "sasl_plain_password",
+            "sasl_mechanism",
+            "security_protocol",
+            "ssl_cafile",
+        ):
+            if key in kafka_auth:
+                kwargs[key] = kafka_auth[key]
     elif getattr(settings, "KAFKA_SERVERS", None):
         kwargs["bootstrap_servers"] = settings.KAFKA_SERVERS
     else:
