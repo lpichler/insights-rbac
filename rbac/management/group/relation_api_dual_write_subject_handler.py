@@ -33,6 +33,7 @@ from management.relation_replicator.relation_replicator import (
 )
 from management.role.relation_api_dual_write_handler import RelationApiDualWriteHandler
 from management.role.v2_model import SeededRoleV2
+from management.role.v2_role_scope import v2_role_excluded_applications
 from management.tenant_mapping.v2_activation import TenantVersion, lock_tenant_version
 from migration_tool.models import V2boundresource, V2role, V2rolebinding
 
@@ -402,8 +403,6 @@ class RelationApiDualWriteSubjectHandler:
             # (e.g. cost-management). These roles were intentionally skipped during bulk
             # migration, so missing binding mappings is expected — not a bug.
             if role.access.exists():
-                from management.role.v2_role_scope import v2_role_excluded_applications
-
                 excluded_apps = v2_role_excluded_applications()
                 if excluded_apps:
                     role_apps = set(role.access.values_list("permission__application", flat=True).distinct())

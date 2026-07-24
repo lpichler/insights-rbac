@@ -16,6 +16,8 @@
 #
 """Test tuple changes for RBAC operations."""
 
+import logging
+from contextlib import contextmanager
 from datetime import timedelta
 from typing import Callable, Iterable, Optional, Tuple
 from unittest.mock import patch
@@ -83,6 +85,21 @@ from api.cross_access.relation_api_dual_write_cross_access_handler import (
 )
 from api.cross_access.util import create_cross_principal
 from api.models import Tenant, User
+
+
+@contextmanager
+def enable_logging():
+    """Re-enable logging temporarily for assertLogs in parallel test runner.
+
+    Django's parallel test runner disables low-level logs via logging.disable().
+    This context manager restores logging within its scope and resets afterward.
+    """
+    prior_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    try:
+        yield
+    finally:
+        logging.disable(prior_disable)
 
 
 @override_settings(REPLICATION_TO_RELATION_ENABLED=True)
@@ -1237,8 +1254,6 @@ class DualWriteGroupTestCase(DualWriteTestCase):
 
     def test_empty_group_replicate_skipped(self):
         """Group replication with no relations to add or remove is skipped at handler level."""
-        import logging
-
         group, _ = self.given_group("empty group", [])
 
         replicator = InMemoryRelationReplicator(self.tuples)
@@ -1249,9 +1264,7 @@ class DualWriteGroupTestCase(DualWriteTestCase):
         )
 
         # Don't generate any relations — simulate a no-op role assignment
-        prior_disable = logging.root.manager.disable
-        logging.disable(logging.NOTSET)
-        try:
+        with enable_logging():
             with (
                 self.assertLogs("management.group.relation_api_dual_write_group_handler", level="INFO") as logs,
                 patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
@@ -1263,8 +1276,6 @@ class DualWriteGroupTestCase(DualWriteTestCase):
                 f"Expected handler-level skip log, got: {logs.output}",
             )
             spy.assert_not_called()
-        finally:
-            logging.disable(prior_disable)
 
 
 class DualWriteSystemRolesTestCase(DualWriteTestCase):
@@ -2186,16 +2197,12 @@ class DualWriteSystemRolesTestCase(DualWriteTestCase):
 
     def test_empty_system_role_replication_skipped(self):
         """System role with no permissions skips replication at handler level."""
-        import logging
-
         role = self.fixture.new_system_role(name="empty system role", permissions=[])
 
         replicator = InMemoryRelationReplicator(self.tuples)
         handler = SeedingRelationApiDualWriteHandler(role=role, replicator=replicator)
 
-        prior_disable = logging.root.manager.disable
-        logging.disable(logging.NOTSET)
-        try:
+        with enable_logging():
             with (
                 self.assertLogs("management.role.relation_api_dual_write_handler", level="WARNING") as logs,
                 patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
@@ -2207,8 +2214,6 @@ class DualWriteSystemRolesTestCase(DualWriteTestCase):
                 f"Expected handler-level skip log, got: {logs.output}",
             )
             spy.assert_not_called()
-        finally:
-            logging.disable(prior_disable)
 
 
 class DualWriteCustomRolesTestCase(DualWriteTestCase):
@@ -2726,8 +2731,6 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
 
     def test_empty_replication_event_skipped_for_custom_role(self):
         """Empty replication events are caught at handler level, not at outbox."""
-        import logging
-
         replicator = InMemoryRelationReplicator(self.tuples)
 
         # Create a custom role with no access permissions — results in empty relations
@@ -2735,9 +2738,7 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
 
         dual_write = self.dual_write_handler(role, ReplicationEventType.CREATE_CUSTOM_ROLE, replicator=replicator)
 
-        prior_disable = logging.root.manager.disable
-        logging.disable(logging.NOTSET)
-        try:
+        with enable_logging():
             with (
                 self.assertLogs("management.role.relation_api_dual_write_handler", level="INFO") as logs,
                 patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
@@ -2750,13 +2751,9 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
                 f"Expected handler-level skip log, got: {logs.output}",
             )
             spy.assert_not_called()
-        finally:
-            logging.disable(prior_disable)
 
     def test_empty_delete_replication_event_skipped_for_custom_role(self):
         """Delete of role with no bindings produces no empty event."""
-        import logging
-
         replicator = InMemoryRelationReplicator(self.tuples)
 
         # Create role with no access — no binding mappings will exist
@@ -2766,9 +2763,7 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
         dual_write.prepare_for_update()
         role.delete()
 
-        prior_disable = logging.root.manager.disable
-        logging.disable(logging.NOTSET)
-        try:
+        with enable_logging():
             with (
                 self.assertLogs("management.role.relation_api_dual_write_handler", level="INFO") as logs,
                 patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
@@ -2780,14 +2775,10 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
                 f"Expected handler-level skip log, got: {logs.output}",
             )
             spy.assert_not_called()
-        finally:
-            logging.disable(prior_disable)
 
     @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=["cost-management"])
     def test_excluded_app_role_skipped_without_warning(self):
         """Roles with only excluded-app permissions are skipped gracefully, not warned about."""
-        import logging
-
         # Create a custom role with only cost-management permissions (no dual-write migration).
         # cost-management:reports:read is seeded by default, so we can reference it directly.
         role = self.fixture.new_custom_role(
@@ -2802,9 +2793,7 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
 
         group, _ = self.given_group("test group", ["u1"])
 
-        prior_disable = logging.root.manager.disable
-        logging.disable(logging.NOTSET)
-        try:
+        with enable_logging():
             with self.assertLogs("management.group.relation_api_dual_write_subject_handler", level="INFO") as logs:
                 self.given_roles_assigned_to_group(group, roles=[role])
 
@@ -2817,8 +2806,6 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
                 any("relations are inconsistent" in log for log in logs.output),
                 "Should NOT warn about inconsistency for excluded-app roles",
             )
-        finally:
-            logging.disable(prior_disable)
 
         # Binding mappings should still NOT exist (role was not migrated)
         self.assertFalse(
