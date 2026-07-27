@@ -1909,10 +1909,11 @@ class V2MetricsTest(IdentityRequest):
 
         get_response = Mock(return_value=HttpResponse(status=200))
         middleware = IdentityHeaderMiddleware(get_response=get_response)
-        middleware(self.request)
+        response = middleware(self.request)
 
         ws_after = rbac_v2_requests_total.labels(endpoint="workspace-list", method="GET", status="2xx")._value.get()
         role_after = rbac_v2_requests_total.labels(endpoint="role-list", method="GET", status="2xx")._value.get()
 
         self.assertEqual(ws_after - ws_before, 1)
         self.assertEqual(role_after - role_before, 0)
+        self.assertEqual(response.status_code, 200)
