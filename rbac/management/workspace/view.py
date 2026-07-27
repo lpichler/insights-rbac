@@ -345,11 +345,6 @@ class WorkspaceViewSet(WorkspaceObjectAccessMixin, BaseV2ViewSet):
         queryset-level WorkspaceAccessFilterBackend is intentionally bypassed on cache hit
         because root/default workspaces are never access-restricted within a tenant.
         """
-        # Bridge param to access layer; read by WorkspaceAccessFilterBackend
-        # via getattr(request, "with_ancestry", False) and passed to
-        # is_user_allowed_v2(with_ancestry=...).
-        self.request.with_ancestry = validated_params.get("with_ancestry", False)
-
         org_id = self._get_org_id(self.request)
         cacheable_type = is_cacheable_builtin_type(validated_params)
 

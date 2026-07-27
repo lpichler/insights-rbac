@@ -1220,14 +1220,6 @@ paths:
             type: string
             default: name
           explode: false
-        - name: with_ancestry
-          in: query
-          required: false
-          description: When true, list responses include ancestor workspaces for tree navigation and fallback workspaces (root, default, ungrouped) when the user has no explicit access. When false (default), only workspaces with explicit Inventory permission are returned.
-          schema:
-            type: boolean
-            default: false
-          explode: false
       responses:
         '200':
           description: The request has succeeded.
@@ -2893,10 +2885,6 @@ components:
           allOf:
             - $ref: '#/components/schemas/UUID'
           description: Filter by parent workspace UUID.
-        with_ancestry:
-          type: boolean
-          description: Include ancestor and fallback workspaces in the response.
-          default: false
       example:
         ids:
           - e4277742-b91c-43f1-a185-b827e8574345
