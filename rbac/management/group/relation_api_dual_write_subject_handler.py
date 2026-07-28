@@ -487,6 +487,9 @@ class RelationApiDualWriteSubjectHandler:
         Principally, this ensures that the role will not be changed by seeding while this lock is held (since seeding
         locks the role FOR UPDATE).
 
+        This should be used before any role (un)assignment operation, unless the operation doesn't actually depend on
+        the state of the role. (For instance, certain unassignment operations only care about the role's UUID.)
+
         It is expected that the call has already locked all provided custom roles FOR UPDATE.
         """
         roles = set(roles)
