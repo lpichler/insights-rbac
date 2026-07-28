@@ -33,6 +33,7 @@ from management.relation_replicator.relation_replicator import (
 )
 from management.role.relation_api_dual_write_handler import RelationApiDualWriteHandler
 from management.role.v2_model import SeededRoleV2
+from management.role.v2_role_scope import v2_role_excluded_applications
 from management.tenant_mapping.v2_activation import TenantVersion, lock_tenant_version
 from migration_tool.models import V2boundresource, V2role, V2rolebinding
 
@@ -398,6 +399,23 @@ class RelationApiDualWriteSubjectHandler:
         }
 
         if not mappings:
+            # Check if the role's permissions are entirely in migration-excluded apps
+            # (e.g. cost-management). These roles were intentionally skipped during bulk
+            # migration, so missing binding mappings is expected — not a bug.
+            if role.access.exists():
+                excluded_apps = v2_role_excluded_applications()
+                if excluded_apps:
+                    role_apps = set(role.access.values_list("permission__application", flat=True).distinct())
+                    if role_apps and role_apps <= excluded_apps:
+                        logger.info(
+                            "[Dual Write] Skipping unmigrated role(%s): '%s' — all permissions "
+                            "are in migration-excluded apps (%s). No binding mappings expected.",
+                            role.uuid,
+                            role.name,
+                            ", ".join(sorted(role_apps)),
+                        )
+                        return
+
             logger.warning(
                 "[Dual Write] Binding mappings not found for role(%s): '%s'. "
                 "Assuming no current relations exist. "
@@ -405,6 +423,7 @@ class RelationApiDualWriteSubjectHandler:
                 role.uuid,
                 role.name,
             )
+            return
 
         # Check for the case where a custom role exists, has BindingMappings, but does not yet have RoleBindings
         # (because it has not been re-migrated since the dual-write code started creating RoleBindings).
