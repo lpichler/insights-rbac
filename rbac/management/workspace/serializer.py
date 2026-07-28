@@ -103,11 +103,6 @@ class WorkspaceListInputSerializer(_WorkspaceFilterValidationMixin, serializers.
     )
     parent_id = serializers.CharField(required=False, allow_blank=True, help_text="Filter by parent workspace ID")
     ids = serializers.CharField(required=False, allow_blank=True, help_text="Filter by comma-separated workspace IDs")
-    with_ancestry = serializers.BooleanField(
-        required=False,
-        default=False,
-        help_text="Include ancestor and fallback workspaces (root, default, ungrouped) in the response.",
-    )
 
     def validate_parent_id(self, value: str | None) -> str | None:
         """Return None for empty values, validate UUID format otherwise."""
@@ -166,11 +161,6 @@ class WorkspaceQueryInputSerializer(_WorkspaceFilterValidationMixin, serializers
         ),
     )
     parent_id = serializers.UUIDField(required=False, help_text="Filter by parent workspace ID")
-    with_ancestry = serializers.BooleanField(
-        required=False,
-        default=False,
-        help_text="Include ancestor and fallback workspaces (root, default, ungrouped) in the response.",
-    )
 
     def validate_ids(self, value: list) -> list[str]:
         """Convert UUIDs to lowercase strings and deduplicate."""

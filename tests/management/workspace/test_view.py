@@ -3962,14 +3962,13 @@ class WorkspaceTestsQuery(WorkspaceViewTests):
         self.assertIn("next", links)
         self.assertIn("last", links)
 
-    def test_query_with_ancestry(self):
-        """Query with with_ancestry=true includes ancestor/fallback workspaces."""
+    def test_query_returns_requested_workspace(self):
+        """Query returns workspaces matching the requested IDs."""
         client = APIClient()
         response = client.post(
             self._query_url(),
             data={
                 "ids": [str(self.standard_workspace.id)],
-                "with_ancestry": True,
             },
             format="json",
             **self.headers,
@@ -3977,9 +3976,6 @@ class WorkspaceTestsQuery(WorkspaceViewTests):
         payload = response.data
 
         self.assertSuccessfulList(response, payload)
-        # with_ancestry expands access filter to include ancestors and fallback
-        # workspaces; for admin users with full access the parameter is accepted
-        # and the response still contains the requested workspace
         returned_ids = [ws["id"] for ws in payload["data"]]
         self.assertIn(str(self.standard_workspace.id), returned_ids)
 
