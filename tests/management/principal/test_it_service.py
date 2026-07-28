@@ -486,7 +486,7 @@ class ITServiceTests(IdentityRequest):
 
     @mock.patch("management.principal.it_service.requests.get")
     def test_request_service_accounts_client_ids_large(self, get: mock.Mock):
-        """Test that the function under test uses client IDs when few service accounts are needed."""
+        """Test that the function under test uses client IDs when many service accounts are needed."""
         # Create a fake IT service with service accounts.
         mocked_service_accounts = self._create_mock_it_service_accounts(400)
         requested_service_accounts = mocked_service_accounts[0:5]
