@@ -182,15 +182,15 @@ def _update_or_create_roles(roles, config: _SeedRolesConfig, platform_roles=None
     exist without their corresponding V2 SeededRoleV2 records.
     """
     current_roles: list[Role] = list()
-    # Sort roles by name to ensure consistent lock ordering and prevent deadlocks
-    sorted_roles = sorted(roles, key=lambda r: r.get("name", ""))
-    for role_json in sorted_roles:
+
+    for role_json in roles:
         try:
             role = _make_role(role_json, config, platform_roles, resource_service)
             current_roles.append(role)
         except Exception as e:
             logger.error(f'Failed to update or create system role: {role_json.get("name")} with error: {e}')
             raise
+
     return current_roles
 
 
