@@ -2950,6 +2950,12 @@ def replicate_updated_workspaces(request):
     Returns:
         JSON response indicating the task has been queued
     """
+    if "since" not in request.GET:
+        return JsonResponse({"field": "since", "detail": 'missing query parameter "since"'}, status=400)
+
+    if "stream" not in request.GET:
+        return JsonResponse({"field": "since", "detail": 'missing query parameter "stream"'}, status=400)
+
     since = request.GET["since"]
     stream = request.GET["stream"]
     exclude_unchanged_default_workspaces = (
