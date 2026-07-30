@@ -214,7 +214,17 @@ class ITService:
             raise UnexpectedStatusCodeFromITError()
 
         # Extract the body contents.
-        return response.json()
+        response_body = response.json()
+
+        # TODO: remove when no longer needed
+        LOGGER.info(
+            "Made service-account request: parameters=%s; response: status=%s, body=%s",
+            parameters,
+            response.status_code,
+            response_body,
+        )
+
+        return response_body
 
     def _request_service_accounts_transformed(self, bearer_token: str, client_ids: Optional[list[str]]) -> list[dict]:
         """
