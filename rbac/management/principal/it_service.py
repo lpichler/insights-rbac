@@ -218,8 +218,9 @@ class ITService:
 
         # TODO: remove when no longer needed
         LOGGER.info(
-            "Made service-account request: parameters=%s; response: status=%s, body=%s",
+            "Made service-account request: parameters=%s, url=%s; response: status=%s, body=%s",
             parameters,
+            response.url,
             response.status_code,
             response_body,
         )
