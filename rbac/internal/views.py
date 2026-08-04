@@ -2964,7 +2964,10 @@ def replicate_updated_workspaces(request):
     )
 
     try:
-        datetime.datetime.fromisoformat(since)
+        parsed_since = datetime.datetime.fromisoformat(since)
+
+        if parsed_since.tzinfo is None:
+            return JsonResponse({"field": "since", "detail": "since time must have timezone"}, status=400)
     except ValueError as e:
         return JsonResponse({"field": "since", "detail": f"invalid datetime: {str(e)}"}, status=400)
 
@@ -3009,7 +3012,10 @@ def replicate_deleted_workspaces(request):
     since = request.GET["since"]
 
     try:
-        datetime.datetime.fromisoformat(since)
+        parsed_since = datetime.datetime.fromisoformat(since)
+
+        if parsed_since.tzinfo is None:
+            return JsonResponse({"field": "since", "detail": "since time must have timezone"}, status=400)
     except ValueError as e:
         return JsonResponse({"field": "since", "detail": f"invalid datetime: {str(e)}"}, status=400)
 
