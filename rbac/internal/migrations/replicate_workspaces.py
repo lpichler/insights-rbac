@@ -262,5 +262,13 @@ def replicate_deleted_workspaces(since: datetime.datetime, replicator: Optional[
         created__gte=since, resource_type="workspace", action="delete", resource_uuid__isnull=False
     )
 
+    total_count = delete_logs.count()
+    logger.info(f"About to replicate the deletion of ~{total_count} workspaces.")
+
+    replicated_count = 0
+
     for batch in itertools.batched(delete_logs.iterator(), 500):
         _replicate_deleted_batch(replicator, [_DeletedWorkspaceEntry(l.tenant_id, l.resource_uuid) for l in batch])
+
+        replicated_count += len(batch)
+        logger.info(f"Replicated the deletion of {replicated_count}/~{total_count} workspaces.")
