@@ -222,7 +222,7 @@ def replicate_updated_workspaces(
     )
 
 
-@dataclasses.dataclass()
+@dataclasses.dataclass(frozen=True)
 class _DeletedWorkspaceEntry:
     tenant_id: int
     workspace_id: uuid.UUID
