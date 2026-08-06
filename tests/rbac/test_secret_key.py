@@ -12,9 +12,20 @@ class SecretKeyConfigurationTests(TestCase):
     """Verify SECRET_KEY is handled securely depending on DEBUG and env."""
 
     @staticmethod
-    def _reload_settings(**env_overrides):
-        """Reload settings module with the given environment overrides."""
-        with mock.patch.dict(os.environ, env_overrides, clear=False):
+    def _reload_settings(exclude_keys=None, clear=False, **env_overrides):
+        """Reload settings module with the given environment overrides.
+
+        Args:
+            exclude_keys: Iterable of env var names to remove before reload.
+            clear: If True, only env_overrides will be present in the environment.
+            **env_overrides: Environment variables to set.
+        """
+        env = dict(os.environ) if not clear else {}
+        if exclude_keys:
+            for key in exclude_keys:
+                env.pop(key, None)
+        env.update(env_overrides)
+        with mock.patch.dict(os.environ, env, clear=True):
             import rbac.settings as settings_mod
 
             importlib.reload(settings_mod)
@@ -27,24 +38,14 @@ class SecretKeyConfigurationTests(TestCase):
 
     def test_random_key_generated_in_debug_mode(self):
         """When DEBUG=True and no key is set, a random key should be generated."""
-        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SECRET_KEY"}
-        env["DJANGO_DEBUG"] = "True"
-        with mock.patch.dict(os.environ, env, clear=True):
-            import rbac.settings as settings_mod
-
-            importlib.reload(settings_mod)
-            self.assertTrue(len(settings_mod.SECRET_KEY) >= 50)
+        mod = self._reload_settings(exclude_keys=["DJANGO_SECRET_KEY"], DJANGO_DEBUG="True")
+        self.assertTrue(len(mod.SECRET_KEY) >= 50)
 
     def test_missing_key_raises_in_non_debug(self):
         """When DEBUG=False and no key is set, ImproperlyConfigured should be raised."""
-        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SECRET_KEY"}
-        env["DJANGO_DEBUG"] = "False"
-        with mock.patch.dict(os.environ, env, clear=True):
-            import rbac.settings as settings_mod
-
-            with self.assertRaises(ImproperlyConfigured) as ctx:
-                importlib.reload(settings_mod)
-            self.assertIn("DJANGO_SECRET_KEY", str(ctx.exception))
+        with self.assertRaises(ImproperlyConfigured) as ctx:
+            self._reload_settings(exclude_keys=["DJANGO_SECRET_KEY"], DJANGO_DEBUG="False")
+        self.assertIn("DJANGO_SECRET_KEY", str(ctx.exception))
 
     def tearDown(self):
         """Restore settings to working state after each test."""
