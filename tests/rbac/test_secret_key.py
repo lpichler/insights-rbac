@@ -38,8 +38,10 @@ class SecretKeyConfigurationTests(TestCase):
 
     def test_random_key_generated_in_debug_mode(self):
         """When DEBUG=True and no key is set, a random key should be generated."""
-        mod = self._reload_settings(exclude_keys=["DJANGO_SECRET_KEY"], DJANGO_DEBUG="True")
-        self.assertTrue(len(mod.SECRET_KEY) >= 50)
+        sentinel = "sentinel-random-key-for-testing"
+        with mock.patch("django.core.management.utils.get_random_secret_key", return_value=sentinel):
+            mod = self._reload_settings(exclude_keys=["DJANGO_SECRET_KEY"], DJANGO_DEBUG="True")
+        self.assertEqual(mod.SECRET_KEY, sentinel)
 
     def test_missing_key_raises_in_non_debug(self):
         """When DEBUG=False and no key is set, ImproperlyConfigured should be raised."""
