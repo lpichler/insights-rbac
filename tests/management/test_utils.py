@@ -806,3 +806,20 @@ class ValidatePskTests(IdentityRequest):
         """Test that non-ASCII PSK is rejected, not a TypeError."""
         self.assertFalse(validate_psk("\u00e9\u00e8\u00ea", "test-client"))
         self.assertFalse(validate_psk("\U0001f600", "test-client"))
+
+    @override_settings(SERVICE_PSKS=PSK_CONFIG)
+    def test_valid_psk_wrong_client_id(self):
+        """PSK valid for one client must not authenticate a different client."""
+        self.assertFalse(validate_psk("primary-secret-value", "no-alt-client"))
+
+    @override_settings(SERVICE_PSKS={"test-client": {"secret": "", "alt-secret": "real-key"}})
+    def test_empty_string_secret_in_config(self):
+        """Empty string secret in config should not match empty PSK."""
+        self.assertTrue(validate_psk("real-key", "test-client"))
+        self.assertFalse(validate_psk("", "test-client"))
+
+    @override_settings(SERVICE_PSKS=PSK_CONFIG)
+    def test_psk_type_mismatch_triggers_type_error(self):
+        """Verify that TypeError (e.g. bytes vs str) is caught and returns False."""
+        with mock.patch("management.utils.hmac.compare_digest", side_effect=TypeError("type mismatch")):
+            self.assertFalse(validate_psk("some-psk", "test-client"))

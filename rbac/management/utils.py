@@ -132,7 +132,8 @@ def validate_psk(psk, client_id):
         try:
             primary_match = hmac.compare_digest(psk, primary_key)
             alt_match = hmac.compare_digest(psk, alt_key)
-        except TypeError:
+        except TypeError as e:
+            logger.warning("PSK validation TypeError for client_id=%s: %s", client_id, e)
             return False
         return (has_primary_key and primary_match) or (has_alt_key and alt_match)
 
