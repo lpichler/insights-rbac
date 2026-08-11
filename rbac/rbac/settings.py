@@ -80,6 +80,8 @@ DEBUG = False if os.getenv("DJANGO_DEBUG", "False") == "False" else True  # pyli
 # In non-DEBUG mode the key MUST be set explicitly; in DEBUG mode a random
 # key is generated so that local dev / test harnesses work without config.
 _secret_key = os.getenv("DJANGO_SECRET_KEY")
+# Note: empty string is intentionally treated as unset (bool("") is False),
+# so DJANGO_SECRET_KEY="" falls through to the DEBUG/error branch below.
 if _secret_key:
     SECRET_KEY = _secret_key
 elif DEBUG:
