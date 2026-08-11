@@ -40,6 +40,7 @@ Usage:
 import enum
 import logging
 
+from django.db import transaction
 from django.utils import timezone
 from management.tenant_mapping.model import TenantMapping
 from management.tenant_service.v2 import TenantNotBootstrappedError
@@ -161,6 +162,7 @@ class InvalidV2OptOutError(Exception):
     pass
 
 
+@transaction.atomic
 def set_v2_opt_in_state(tenant: Tenant, opted_in: bool):
     """
     Set the V2 opt-in state of a tenant.
