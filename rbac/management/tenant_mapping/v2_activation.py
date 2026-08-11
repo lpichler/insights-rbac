@@ -75,12 +75,6 @@ class V1WriteBlockedError(Exception):
     pass
 
 
-class InvalidV2OptOutError(Exception):
-    """Raised when a tenant attempts to opt out of V2, but cannot."""
-
-    pass
-
-
 def ensure_v2_write_activated(tenant: Tenant):
     """Mark the tenant as V2-activated if not already. Must be called inside a transaction.
 
@@ -123,6 +117,48 @@ def is_v2_write_activated(tenant: Tenant):
         return mapping.v2_write_activated_at is not None
     except TenantMapping.DoesNotExist:
         return False
+
+
+class TenantVersion(enum.IntEnum):
+    """The possible versions a tenant can be in."""
+
+    VERSION_1 = 1
+    VERSION_2 = 2
+
+
+def lock_tenant_version(tenant: Tenant):
+    """Lock a tenant to its current version for the duration of the transaction. Returns the version of the tenant."""
+    mapping = _lock_mapping_for_share(tenant)
+
+    if mapping.v2_write_activated_at is None:
+        return TenantVersion.VERSION_1
+
+    return TenantVersion.VERSION_2
+
+
+def assert_v1_write_allowed(tenant: Tenant):
+    """Assert that V1 writes are still allowed for this tenant. Must be called inside a transaction.
+
+    Uses FOR SHARE: a tenant cannot transition V2->V1, and the shared lock prevents a
+    concurrent V2 activation (which needs FOR UPDATE) from converting the tenant while
+    this V1 write is in progress. Concurrent V1 writes are not blocked by each other.
+    """
+    # We could just use lock_tenant_version here, but we instead do the check directly in order to give a better error
+    # message.
+
+    mapping = _lock_mapping_for_share(tenant)
+
+    if mapping.v2_write_activated_at is not None:
+        raise V1WriteBlockedError(
+            f"Tenant {tenant.org_id} has been activated for V2 writes "
+            f"(since {mapping.v2_write_activated_at}). V1 writes are no longer permitted."
+        )
+
+
+class InvalidV2OptOutError(Exception):
+    """Raised when a tenant attempts to opt out of V2, but cannot."""
+
+    pass
 
 
 def set_v2_opt_in_state(tenant: Tenant, opted_in: bool):
@@ -171,39 +207,3 @@ def lock_v2_opt_in_state(tenant: Tenant) -> bool:
     """
     mapping = _lock_mapping_for_share(tenant)
     return mapping.v2_opted_in_at is not None
-
-
-class TenantVersion(enum.IntEnum):
-    """The possible versions a tenant can be in."""
-
-    VERSION_1 = 1
-    VERSION_2 = 2
-
-
-def lock_tenant_version(tenant: Tenant):
-    """Lock a tenant to its current version for the duration of the transaction. Returns the version of the tenant."""
-    mapping = _lock_mapping_for_share(tenant)
-
-    if mapping.v2_write_activated_at is None:
-        return TenantVersion.VERSION_1
-
-    return TenantVersion.VERSION_2
-
-
-def assert_v1_write_allowed(tenant: Tenant):
-    """Assert that V1 writes are still allowed for this tenant. Must be called inside a transaction.
-
-    Uses FOR SHARE: a tenant cannot transition V2->V1, and the shared lock prevents a
-    concurrent V2 activation (which needs FOR UPDATE) from converting the tenant while
-    this V1 write is in progress. Concurrent V1 writes are not blocked by each other.
-    """
-    # We could just use lock_tenant_version here, but we instead do the check directly in order to give a better error
-    # message.
-
-    mapping = _lock_mapping_for_share(tenant)
-
-    if mapping.v2_write_activated_at is not None:
-        raise V1WriteBlockedError(
-            f"Tenant {tenant.org_id} has been activated for V2 writes "
-            f"(since {mapping.v2_write_activated_at}). V1 writes are no longer permitted."
-        )
