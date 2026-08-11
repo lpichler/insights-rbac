@@ -55,7 +55,7 @@ _LOCK_FOR_SHARE_SQL = (  # sourcery: disable=sql-injection-risk
 
 
 def _lock_mapping_for_share(tenant: Tenant) -> TenantMapping:
-    """Returns the TenantMapping for the provided tenant locked FOR SHARE."""
+    """Return the TenantMapping for the provided tenant locked FOR SHARE."""
     mappings = list(TenantMapping.objects.raw(_LOCK_FOR_SHARE_SQL, [tenant.id]))
 
     if len(mappings) > 1:
@@ -151,6 +151,26 @@ def set_v2_opt_in_state(tenant: Tenant, opted_in: bool):
         mapping.v2_opted_in_at = None
 
     mapping.save(update_fields=["v2_opted_in_at"])
+
+
+def is_v2_opted_in(tenant: Tenant) -> bool:
+    """Return whether the provided tenant has opted-in to V2 without establishing a lock on that state."""
+    try:
+        mapping = TenantMapping.objects.get(tenant=tenant)
+        return mapping.v2_opted_in_at is not None
+    except TenantMapping.DoesNotExist:
+        return False
+
+
+def lock_v2_opt_in_state(tenant: Tenant) -> bool:
+    """
+    Return whether the provided tenant has opted-in to V2 and establish a lock on that state.
+
+    This is only meaningful to use within a database transaction. (Otherwise, if a lock is not needed,
+    use is_v2_opted_in.)
+    """
+    mapping = _lock_mapping_for_share(tenant)
+    return mapping.v2_opted_in_at is not None
 
 
 class TenantVersion(enum.IntEnum):

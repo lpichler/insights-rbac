@@ -25,8 +25,10 @@ from management.tenant_mapping.v2_activation import (
     V1WriteBlockedError,
     assert_v1_write_allowed,
     ensure_v2_write_activated,
+    is_v2_opted_in,
     is_v2_write_activated,
     lock_tenant_version,
+    lock_v2_opt_in_state,
     set_v2_opt_in_state,
 )
 from management.tenant_service.v2 import TenantNotBootstrappedError
@@ -127,6 +129,17 @@ class V2ActivationTests(TestCase):
             with transaction.atomic():
                 lock_tenant_version(unbootstrapped)
 
+
+class V2OptInTests(TestCase):
+    def setUp(self):
+        self.fixture = RbacFixture()
+        self.bootstrapped = self.fixture.new_tenant(org_id="activation-test-org")
+        self.tenant = self.bootstrapped.tenant
+
+    def _assert_opt_in_state(self, opted_in: bool):
+        self.assertEqual(is_v2_opted_in(self.tenant), opted_in)
+        self.assertEqual(lock_v2_opt_in_state(self.tenant), opted_in)
+
     def test_opt_in_v1_tenant(self):
         set_v2_opt_in_state(self.tenant, True)
 
@@ -140,12 +153,16 @@ class V2ActivationTests(TestCase):
         self.assertIsNotNone(initial_timestamp)
         self.assertIsNone(mapping.v2_write_activated_at)
 
+        self._assert_opt_in_state(True)
+
         # Opting-in should be idempotent.
 
         set_v2_opt_in_state(self.tenant, True)
 
         mapping.refresh_from_db()
         self.assertEqual(initial_timestamp, mapping.v2_opted_in_at)
+
+        self._assert_opt_in_state(True)
 
     def test_opt_out_v1_tenant(self):
         set_v2_opt_in_state(self.tenant, True)
@@ -158,6 +175,12 @@ class V2ActivationTests(TestCase):
 
         self.assertIsNone(mapping.v2_opted_in_at)
         self.assertIsNone(mapping.v2_write_activated_at)
+
+        self._assert_opt_in_state(False)
+
+    def test_v2_tenant_opted_in(self):
+        ensure_v2_write_activated(self.tenant)
+        self._assert_opt_in_state(True)
 
     def test_opt_in_v2_tenant_noop(self):
         ensure_v2_write_activated(self.tenant)
@@ -173,6 +196,8 @@ class V2ActivationTests(TestCase):
         self.assertEqual(initial_timestamp, mapping.v2_opted_in_at)
         self.assertEqual(initial_timestamp, mapping.v2_write_activated_at)
 
+        self._assert_opt_in_state(True)
+
     def test_opt_out_v2_tenant_prohibited(self):
         ensure_v2_write_activated(self.tenant)
 
@@ -184,3 +209,5 @@ class V2ActivationTests(TestCase):
 
         self.assertIsNotNone(mapping.v2_write_activated_at)
         self.assertIsNotNone(mapping.v2_opted_in_at)
+
+        self._assert_opt_in_state(True)
