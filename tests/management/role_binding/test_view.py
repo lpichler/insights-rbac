@@ -4170,7 +4170,7 @@ class UpdateRoleBindingsBySubjectAPITests(IdentityRequest):
             # Invalid UUID in role id
             (
                 {"roles": [{"id": "not-a-uuid"}]},
-                "roles.id",
+                "roles.0.id",
                 "Must be a valid UUID.",
             ),
         ]
