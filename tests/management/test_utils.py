@@ -821,5 +821,12 @@ class ValidatePskTests(IdentityRequest):
     @override_settings(SERVICE_PSKS=PSK_CONFIG)
     def test_psk_type_mismatch_triggers_type_error(self):
         """Verify that TypeError (e.g. bytes vs str) is caught and returns False."""
-        with mock.patch("management.utils.hmac.compare_digest", side_effect=TypeError("type mismatch")):
+        with (
+            mock.patch(
+                "management.utils.hmac.compare_digest",
+                side_effect=TypeError("type mismatch"),
+            ),
+            mock.patch("management.utils.logger.warning") as warning,
+        ):
             self.assertFalse(validate_psk("some-psk", "test-client"))
+        warning.assert_called_once()
