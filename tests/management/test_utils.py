@@ -835,6 +835,41 @@ class ValidatePskTests(IdentityRequest):
         warning.assert_called_once()
 
 
+class InventoryAuthTimeoutAdapterTests(IdentityRequest):
+    """Test _InventoryAuthTimeoutAdapter applies bounded timeouts correctly."""
+
+    def setUp(self):
+        """Set up test data."""
+        super().setUp()
+        from management.utils import _InventoryAuthTimeoutAdapter
+
+        self.adapter = _InventoryAuthTimeoutAdapter()
+
+    @mock.patch("requests.adapters.HTTPAdapter.send")
+    def test_applies_timeout_when_none_supplied(self, mock_super_send):
+        """Adapter injects bounded timeout when no timeout is supplied."""
+        mock_super_send.return_value = Mock()
+        self.adapter.send(Mock())
+        _, kwargs = mock_super_send.call_args
+        self.assertEqual(kwargs["timeout"], (5, 10))
+
+    @mock.patch("requests.adapters.HTTPAdapter.send")
+    def test_overrides_explicit_timeout_none(self, mock_super_send):
+        """Adapter replaces an explicit timeout=None with the bounded timeout tuple."""
+        mock_super_send.return_value = Mock()
+        self.adapter.send(Mock(), timeout=None)
+        _, kwargs = mock_super_send.call_args
+        self.assertEqual(kwargs["timeout"], (5, 10))
+
+    @mock.patch("requests.adapters.HTTPAdapter.send")
+    def test_preserves_caller_timeout(self, mock_super_send):
+        """Adapter does not override a caller-supplied non-None timeout."""
+        mock_super_send.return_value = Mock()
+        self.adapter.send(Mock(), timeout=30)
+        _, kwargs = mock_super_send.call_args
+        self.assertEqual(kwargs["timeout"], 30)
+
+
 class GetInventoryAuthMetadataTests(IdentityRequest):
     """Test get_inventory_auth_metadata builds/fails auth metadata correctly."""
 

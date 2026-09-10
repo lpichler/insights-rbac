@@ -82,13 +82,11 @@ class _InventoryAuthTimeoutAdapter(HTTPAdapter):
 
     def send(self, request, **kwargs):
         """Send a token request with connect and read timeouts when none is supplied."""
-        kwargs.setdefault(
-            "timeout",
-            (
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (
                 INVENTORY_AUTH_TOKEN_CONNECT_TIMEOUT_SECONDS,
                 INVENTORY_AUTH_TOKEN_READ_TIMEOUT_SECONDS,
-            ),
-        )
+            )
         return super().send(request, **kwargs)
 
 
