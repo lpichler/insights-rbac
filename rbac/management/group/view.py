@@ -58,7 +58,7 @@ from management.notifications.notification_handlers import (
 )
 from management.permissions import GroupAccessPermission
 from management.permissions.v2_edit_api_access import is_v2_edit_enabled_for_request
-from management.principal.backfill import backfill_remote_principal
+from management.principal.backfill import backfill_remote_principals
 from management.principal.it_service import ITService
 from management.principal.model import Principal
 from management.principal.proxy import PrincipalProxy, external_principal_to_user
@@ -940,13 +940,24 @@ class GroupViewSet(
                     )
             # Best-effort backfill of new principals into SpiceDB.
             if principals_from_response:
+                tenant = self.request.tenant
                 bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
+                users_to_backfill = []
                 for bop_item in principals_from_response:
                     user_obj = external_principal_to_user(bop_item)
                     if not user_obj.org_id:
-                        user_obj.org_id = org_id
+                        user_obj.org_id = tenant.org_id
+                    elif user_obj.org_id != tenant.org_id:
+                        logger.warning(
+                            "Skipping backfill for %s: org %s does not match tenant org %s",
+                            user_obj.username,
+                            user_obj.org_id,
+                            tenant.org_id,
+                        )
+                        continue
                     if user_obj.user_id and user_obj.is_active:
-                        backfill_remote_principal(bootstrap_service, user_obj, self.request.tenant, org_id)
+                        users_to_backfill.append(user_obj)
+                backfill_remote_principals(bootstrap_service, users_to_backfill, tenant)
 
             new_users = []
             if len(principals) > 0:

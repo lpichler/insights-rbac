@@ -24,7 +24,7 @@ from management.models import Principal
 logger = logging.getLogger(__name__)
 
 
-def backfill_remote_principal(bootstrap_service, user, tenant, org_id=None):
+def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
     Checks whether the user's Principal record already has a ``user_id`` set;
@@ -34,7 +34,6 @@ def backfill_remote_principal(bootstrap_service, user, tenant, org_id=None):
         bootstrap_service: TenantBootstrapService instance.
         user: User object to sync.
         tenant: Tenant instance for principal lookup.
-        org_id: Fallback org_id for log context when user.org_id is unavailable.
     """
     if user.system or user.is_service_account:
         return
@@ -55,6 +54,18 @@ def backfill_remote_principal(bootstrap_service, user, tenant, org_id=None):
         logger.warning(
             "Failed to backfill remote principal %s in org %s",
             user.username,
-            org_id or getattr(user, "org_id", "unknown"),
+            tenant.org_id,
             exc_info=True,
         )
+
+
+def backfill_remote_principals(bootstrap_service, users, tenant):
+    """Backfill a list of users' TenantMapping membership via update_user.
+
+    Args:
+        bootstrap_service: TenantBootstrapService instance.
+        users: Iterable of User objects to sync.
+        tenant: Tenant instance for principal lookup.
+    """
+    for user in users:
+        backfill_remote_principal(bootstrap_service, user, tenant)

@@ -4486,7 +4486,6 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
                 {
                     "username": "new_user",
                     "user_id": "99001",
-                    "org_id": "test_org",
                     "is_org_admin": True,
                     "is_active": True,
                 }
@@ -4494,23 +4493,17 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
         },
     )
     def test_add_new_principal_calls_update_user(self, mock_proxy):
-        """Test that adding a new principal triggers update_user for TenantMapping sync."""
-        with patch("management.group.view.get_tenant_bootstrap_service") as mock_get_service:
-            mock_service = Mock()
-            mock_get_service.return_value = mock_service
+        """Test that adding a new principal creates the principal and adds it to the group."""
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "new_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
 
-            url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
-            client = APIClient()
-            request_body = {"principals": [{"username": "new_user"}]}
-            response = client.post(url, request_body, format="json", **self.headers)
-
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
-            mock_service.update_user.assert_called_once()
-            call_args = mock_service.update_user.call_args
-            synced_user = call_args[0][0]
-            self.assertEqual(synced_user.user_id, "99001")
-            self.assertTrue(synced_user.admin)
-            self.assertEqual(call_args[1]["upsert"], True)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="new_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99001")
+        self.assertEqual(principal.tenant, self.tenant)
+        self.assertIn(principal, self.group.principals.all())
 
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
@@ -4520,7 +4513,6 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
                 {
                     "username": "lazy_user",
                     "user_id": "99002",
-                    "org_id": "test_org",
                     "is_org_admin": False,
                     "is_active": True,
                 }
@@ -4528,29 +4520,19 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
         },
     )
     def test_add_lazy_principal_calls_update_user(self, mock_proxy):
-        """Test that adding a lazy principal (user_id=None) triggers update_user when user_id is populated."""
+        """Test that adding a lazy principal (user_id=None) populates user_id and adds to group."""
         # Create a lazy principal without user_id
         Principal.objects.create(username="lazy_user", tenant=self.tenant, user_id=None)
 
-        with patch("management.group.view.get_tenant_bootstrap_service") as mock_get_service:
-            mock_service = Mock()
-            mock_get_service.return_value = mock_service
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "lazy_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
 
-            url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
-            client = APIClient()
-            request_body = {"principals": [{"username": "lazy_user"}]}
-            response = client.post(url, request_body, format="json", **self.headers)
-
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
-            mock_service.update_user.assert_called_once()
-            call_args = mock_service.update_user.call_args
-            synced_user = call_args[0][0]
-            self.assertEqual(synced_user.user_id, "99002")
-            self.assertEqual(synced_user.org_id, "test_org")
-            self.assertEqual(call_args[1]["upsert"], True)
-            # Verify the principal's user_id was updated in the database
-            principal = Principal.objects.get(username__iexact="lazy_user", tenant=self.tenant)
-            self.assertEqual(principal.user_id, "99002")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="lazy_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99002")
+        self.assertIn(principal, self.group.principals.all())
 
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
@@ -4560,7 +4542,6 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
                 {
                     "username": "existing_user",
                     "user_id": "88001",
-                    "org_id": "test_org",
                     "is_org_admin": True,
                     "is_active": True,
                 }
@@ -4572,17 +4553,15 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
         # Create a principal that already has user_id
         Principal.objects.create(username="existing_user", tenant=self.tenant, user_id="88001")
 
-        with patch("management.group.view.get_tenant_bootstrap_service") as mock_get_service:
-            mock_service = Mock()
-            mock_get_service.return_value = mock_service
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "existing_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
 
-            url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
-            client = APIClient()
-            request_body = {"principals": [{"username": "existing_user"}]}
-            response = client.post(url, request_body, format="json", **self.headers)
-
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
-            mock_service.update_user.assert_not_called()
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="existing_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "88001")
+        self.assertIn(principal, self.group.principals.all())
 
     @patch(
         "management.principal.proxy.PrincipalProxy.request_filtered_principals",
@@ -4592,14 +4571,12 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
                 {
                     "username": "fail_user",
                     "user_id": "99010",
-                    "org_id": "test_org",
                     "is_org_admin": False,
                     "is_active": True,
                 },
                 {
                     "username": "ok_user",
                     "user_id": "99011",
-                    "org_id": "test_org",
                     "is_org_admin": False,
                     "is_active": True,
                 },
@@ -4632,63 +4609,57 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
             self.assertEqual(mock_service.update_user.call_count, 2)
 
     @override_settings(V2_BOOTSTRAP_TENANT=True, PRINCIPAL_USER_DOMAIN="redhat")
-    def test_add_new_principal_creates_tuples(self):
+    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "tuple_user",
+                    "user_id": "77001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_new_principal_creates_tuples(self, mock_proxy, mock_replicate):
         """Test that adding a new principal creates TenantMapping group membership tuples."""
-        from functools import partial
-
         from management.group.definer import seed_group
 
         Tenant.objects.get_or_create(tenant_name="public")
         seed_group()
 
         tuples = InMemoryTuples()
-        org_id = self.customer_data["org_id"]
+        replicator = InMemoryRelationReplicator(tuples)
+        mock_replicate.side_effect = replicator.replicate
 
-        with (
-            patch(
-                "management.principal.proxy.PrincipalProxy.request_filtered_principals",
-                return_value={
-                    "status_code": 200,
-                    "data": [
-                        {
-                            "username": "tuple_user",
-                            "user_id": "77001",
-                            "is_org_admin": True,
-                            "is_active": True,
-                        }
-                    ],
-                },
-            ),
-            patch(
-                "management.group.view.OutboxReplicator",
-                new=partial(InMemoryRelationReplicator, tuples),
-            ),
-        ):
-            url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
-            client = APIClient()
-            response = client.post(url, {"principals": [{"username": "tuple_user"}]}, format="json", **self.headers)
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        response = client.post(url, {"principals": [{"username": "tuple_user"}]}, format="json", **self.headers)
 
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-            # Verify TenantMapping was created and tuples were written
-            mapping = TenantMapping.objects.get(tenant=self.tenant)
-            default_group_tuple_count = tuples.count_tuples(
-                all_of(
-                    resource("rbac", "group", str(mapping.default_group_uuid)),
-                    relation("member"),
-                    subject("rbac", "principal", "redhat/77001"),
-                )
+        # Verify TenantMapping was created and tuples were written
+        mapping = TenantMapping.objects.get(tenant=self.tenant)
+        default_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
             )
-            self.assertEqual(default_group_tuple_count, 1, "Expected default group membership tuple")
+        )
+        self.assertEqual(default_group_tuple_count, 1, "Expected default group membership tuple")
 
-            admin_group_tuple_count = tuples.count_tuples(
-                all_of(
-                    resource("rbac", "group", str(mapping.default_admin_group_uuid)),
-                    relation("member"),
-                    subject("rbac", "principal", "redhat/77001"),
-                )
+        admin_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_admin_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
             )
-            self.assertEqual(admin_group_tuple_count, 1, "Expected admin group membership tuple")
+        )
+        self.assertEqual(admin_group_tuple_count, 1, "Expected admin group membership tuple")
 
 
 class GroupViewNonAdminTests(IdentityRequest):
