@@ -231,8 +231,8 @@ class IdentityHeaderMiddleware:
                     tenant = Tenant.objects.get(org_id=request.user.org_id)
             TENANTS.save_tenant(tenant)
 
-        # Backfill requesting user's TenantMapping groups independently of tenant cache.
-        backfill_remote_principal(self.bootstrap_service, request.user, tenant=tenant)
+        # Backfill requesting user's TenantMapping membership.
+        backfill_remote_principal(self.bootstrap_service, request.user, tenant)
 
         return tenant
 

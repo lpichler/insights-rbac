@@ -50,6 +50,7 @@ from management.group.serializer import (
     RoleMinimumSerializer,
 )
 from management.inventory_replicator.inventory_replicator import ReplicationEventType
+from management.inventory_replicator.outbox_replicator import OutboxReplicator
 from management.models import AuditLog, Group, Role
 from management.notifications.notification_handlers import (
     group_obj_change_notification_handler,
@@ -57,10 +58,10 @@ from management.notifications.notification_handlers import (
 )
 from management.permissions import GroupAccessPermission
 from management.permissions.v2_edit_api_access import is_v2_edit_enabled_for_request
-from management.principal.backfill import backfill_remote_principals
+from management.principal.backfill import backfill_remote_principal
 from management.principal.it_service import ITService
 from management.principal.model import Principal
-from management.principal.proxy import PrincipalProxy
+from management.principal.proxy import PrincipalProxy, external_principal_to_user
 from management.principal.serializer import ServiceAccountSerializer
 from management.principal.view import ADMIN_ONLY_KEY, USERNAME_ONLY_KEY, VALID_BOOLEAN_VALUE
 from management.querysets import (
@@ -70,6 +71,7 @@ from management.querysets import (
 from management.role.view import RoleViewSet
 from management.role_binding.service import RoleBindingService
 from management.tenant_mapping.v2_activation import V1WriteBlockedError, assert_v1_write_allowed
+from management.tenant_service import get_tenant_bootstrap_service
 from management.utils import validate_and_get_key, validate_group_name, validate_uuid
 from rest_framework import mixins, serializers, status, viewsets
 from rest_framework.decorators import action
@@ -581,16 +583,7 @@ class GroupViewSet(
         return resp
 
     def add_users(self, group, principals_from_response, org_id=None):
-        """Add principals to the group.
-
-        Remote principal backfill (TenantMapping sync via update_user) should be
-        performed *before* calling this method so that SpiceDB membership is
-        established before the group association is written.
-
-        Returns:
-            tuple: (group, new_principals)
-                - new_principals: all Principal objects added to the group
-        """
+        """Add principals to the group."""
         tenant = self.request.tenant
         new_principals = []
         for item in principals_from_response:
@@ -945,11 +938,15 @@ class GroupViewSet(
                         sa,
                         Principal.Types.SERVICE_ACCOUNT,
                     )
-            # Backfill remote principals in SpiceDB before updating group membership.
-            # Passes tenant so already-synced principals (user_id set) are skipped.
-            # Best-effort: failures are logged per-principal and do not break the group-add operation.
+            # Best-effort backfill of new principals into SpiceDB.
             if principals_from_response:
-                backfill_remote_principals(principals_from_response, org_id, tenant=self.request.tenant)
+                bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
+                for bop_item in principals_from_response:
+                    user_obj = external_principal_to_user(bop_item)
+                    if not user_obj.org_id:
+                        user_obj.org_id = org_id
+                    if user_obj.user_id and user_obj.is_active:
+                        backfill_remote_principal(bootstrap_service, user_obj, self.request.tenant, org_id)
 
             new_users = []
             if len(principals) > 0:
