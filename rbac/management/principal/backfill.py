@@ -62,10 +62,22 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
 def backfill_remote_principals(bootstrap_service, users, tenant):
     """Backfill a list of users' TenantMapping membership via update_user.
 
+    Validates each user's org_id against the tenant, fills in missing org_ids,
+    and skips users without a user_id or that are inactive.
+
     Args:
         bootstrap_service: TenantBootstrapService instance.
         users: Iterable of User objects to sync.
         tenant: Tenant instance for principal lookup.
+
+    Raises:
+        ValueError: If a user's org_id does not match the tenant's org_id.
     """
     for user in users:
+        if not user.org_id:
+            user.org_id = tenant.org_id
+        elif user.org_id != tenant.org_id:
+            raise ValueError(f"User {user.username} org_id {user.org_id} does not match tenant org_id {tenant.org_id}")
+        if not user.user_id or not user.is_active:
+            continue
         backfill_remote_principal(bootstrap_service, user, tenant)

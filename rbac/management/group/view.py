@@ -942,22 +942,8 @@ class GroupViewSet(
             if principals_from_response:
                 tenant = self.request.tenant
                 bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
-                users_to_backfill = []
-                for bop_item in principals_from_response:
-                    user_obj = external_principal_to_user(bop_item)
-                    if not user_obj.org_id:
-                        user_obj.org_id = tenant.org_id
-                    elif user_obj.org_id != tenant.org_id:
-                        logger.warning(
-                            "Skipping backfill for %s: org %s does not match tenant org %s",
-                            user_obj.username,
-                            user_obj.org_id,
-                            tenant.org_id,
-                        )
-                        continue
-                    if user_obj.user_id and user_obj.is_active:
-                        users_to_backfill.append(user_obj)
-                backfill_remote_principals(bootstrap_service, users_to_backfill, tenant)
+                users = [external_principal_to_user(bop_item) for bop_item in principals_from_response]
+                backfill_remote_principals(bootstrap_service, users, tenant)
 
             new_users = []
             if len(principals) > 0:
