@@ -16,12 +16,8 @@
 #
 """Backfill remote principals in SpiceDB via TenantMapping update_user."""
 
-import logging
-
 from django.db import transaction
 from management.models import Principal
-
-logger = logging.getLogger(__name__)
 
 
 def backfill_remote_principal(bootstrap_service, user, tenant):
@@ -43,7 +39,7 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
         return
     if not user.username:
         return
-    if not getattr(user, "user_id", None) or not user.is_active:
+    if not user.user_id or not user.is_active:
         return
 
     try:
@@ -61,8 +57,7 @@ def backfill_remote_principals(bootstrap_service, users, tenant):
     """Backfill a list of users' TenantMapping membership via update_user.
 
     Validates each user's org_id against the tenant and fills in missing
-    org_ids.  Individual failures are logged as warnings and do not prevent
-    remaining users from being processed.
+    org_ids.  Exceptions propagate to the caller.
 
     Args:
         bootstrap_service: TenantBootstrapService instance.
@@ -77,12 +72,4 @@ def backfill_remote_principals(bootstrap_service, users, tenant):
             user.org_id = tenant.org_id
         elif user.org_id != tenant.org_id:
             raise ValueError(f"User {user.username} org_id {user.org_id} does not match tenant org_id {tenant.org_id}")
-        try:
-            backfill_remote_principal(bootstrap_service, user, tenant)
-        except Exception:
-            logger.warning(
-                "Failed to backfill remote principal %s in org %s",
-                user.username,
-                tenant.org_id,
-                exc_info=True,
-            )
+        backfill_remote_principal(bootstrap_service, user, tenant)

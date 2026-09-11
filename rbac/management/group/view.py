@@ -938,7 +938,7 @@ class GroupViewSet(
                         sa,
                         Principal.Types.SERVICE_ACCOUNT,
                     )
-            # Best-effort backfill of new principals into SpiceDB.
+            # Backfill new principals into SpiceDB via TenantMapping.
             if principals_from_response:
                 tenant = self.request.tenant
                 bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
