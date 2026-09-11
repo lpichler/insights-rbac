@@ -28,7 +28,11 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
     Checks whether the user's Principal record already has a ``user_id`` set;
-    if so, no sync is needed.  System users and service accounts are skipped.
+    if so, no sync is needed.  System users, service accounts, inactive users,
+    and users without a ``user_id`` are skipped.
+
+    Raises on failure — callers that want best-effort behaviour should catch
+    exceptions themselves.
 
     Args:
         bootstrap_service: TenantBootstrapService instance.
@@ -39,6 +43,8 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
         return
     if not user.username:
         return
+    if not getattr(user, "user_id", None) or not user.is_active:
+        return
 
     try:
         principal = Principal.objects.get(username__iexact=user.username, tenant=tenant)
@@ -47,23 +53,16 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     except Principal.DoesNotExist:
         pass  # New principal — needs sync.
 
-    try:
-        with transaction.atomic():
-            bootstrap_service.update_user(user, upsert=True)
-    except Exception:
-        logger.warning(
-            "Failed to backfill remote principal %s in org %s",
-            user.username,
-            tenant.org_id,
-            exc_info=True,
-        )
+    with transaction.atomic():
+        bootstrap_service.update_user(user, upsert=True)
 
 
 def backfill_remote_principals(bootstrap_service, users, tenant):
     """Backfill a list of users' TenantMapping membership via update_user.
 
-    Validates each user's org_id against the tenant, fills in missing org_ids,
-    and skips users without a user_id or that are inactive.
+    Validates each user's org_id against the tenant and fills in missing
+    org_ids.  Individual failures are logged as warnings and do not prevent
+    remaining users from being processed.
 
     Args:
         bootstrap_service: TenantBootstrapService instance.
@@ -78,6 +77,12 @@ def backfill_remote_principals(bootstrap_service, users, tenant):
             user.org_id = tenant.org_id
         elif user.org_id != tenant.org_id:
             raise ValueError(f"User {user.username} org_id {user.org_id} does not match tenant org_id {tenant.org_id}")
-        if not user.user_id or not user.is_active:
-            continue
-        backfill_remote_principal(bootstrap_service, user, tenant)
+        try:
+            backfill_remote_principal(bootstrap_service, user, tenant)
+        except Exception:
+            logger.warning(
+                "Failed to backfill remote principal %s in org %s",
+                user.username,
+                tenant.org_id,
+                exc_info=True,
+            )

@@ -736,11 +736,7 @@ class ServiceToServiceWithToken(IdentityRequest):
             "HTTP_X_RH_RBAC_ACCOUNT": self.account_id,
             "HTTP_X_RH_RBAC_ORG_ID": self.org_id,
         }
-        patch_token_validator = patch(
-            "rbac.middleware.IdentityHeaderMiddleware.token_validator", self.TokenValidatorStub()
-        )
-        patch_token_validator.start()
-        self.addCleanup(patch_token_validator.stop)
+        self.enterContext(patch("rbac.middleware.IdentityHeaderMiddleware.token_validator", self.TokenValidatorStub()))
 
     def tearDown(self):
         Tenant.objects.all().delete()
@@ -1187,9 +1183,9 @@ class V2RbacTenantMiddlewareTest(RbacTenantMiddlewareTest):
         super().setUp()
         self._tuples = InMemoryTuples()
         seed_group()
-        patcher = patch("rbac.middleware.OutboxReplicator", new=partial(InMemoryRelationReplicator, self._tuples))
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.enterContext(
+            patch("rbac.middleware.OutboxReplicator", new=partial(InMemoryRelationReplicator, self._tuples))
+        )
 
     def test_bootstraps_tenants_if_not_existing(self):
         # Change the user's org so we create a new tenant
