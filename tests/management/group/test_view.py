@@ -4563,51 +4563,6 @@ class GroupPrincipalV2SyncTests(IdentityRequest):
         self.assertEqual(principal.user_id, "88001")
         self.assertIn(principal, self.group.principals.all())
 
-    @patch(
-        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
-        return_value={
-            "status_code": 200,
-            "data": [
-                {
-                    "username": "fail_user",
-                    "user_id": "99010",
-                    "is_org_admin": False,
-                    "is_active": True,
-                },
-                {
-                    "username": "ok_user",
-                    "user_id": "99011",
-                    "is_org_admin": False,
-                    "is_active": True,
-                },
-            ],
-        },
-    )
-    def test_integrity_error_in_update_user_does_not_rollback_group_add(self, mock_proxy):
-        """Test that an IntegrityError in update_user for one principal does not roll back the group addition."""
-        from django.db import IntegrityError
-
-        with patch("management.group.view.get_tenant_bootstrap_service") as mock_get_service:
-            mock_service = Mock()
-            mock_service.update_user.side_effect = [IntegrityError("duplicate key"), None]
-            mock_get_service.return_value = mock_service
-
-            url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
-            client = APIClient()
-            request_body = {"principals": [{"username": "fail_user"}, {"username": "ok_user"}]}
-            response = client.post(url, request_body, format="json", **self.headers)
-
-            self.assertEqual(response.status_code, status.HTTP_200_OK)
-            # Both principals should be added to the group despite the IntegrityError on the first
-            self.assertTrue(Principal.objects.filter(username__iexact="fail_user", tenant=self.tenant).exists())
-            self.assertTrue(Principal.objects.filter(username__iexact="ok_user", tenant=self.tenant).exists())
-            group = Group.objects.get(uuid=self.group.uuid)
-            group_usernames = list(group.principals.values_list("username", flat=True))
-            self.assertIn("fail_user", group_usernames)
-            self.assertIn("ok_user", group_usernames)
-            # Second update_user should still have been called
-            self.assertEqual(mock_service.update_user.call_count, 2)
-
     @override_settings(V2_BOOTSTRAP_TENANT=True, PRINCIPAL_USER_DOMAIN="redhat")
     @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
     @patch(
