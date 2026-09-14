@@ -591,13 +591,8 @@ class GroupViewSet(
             username = item["username"]
             try:
                 principal = Principal.objects.get(username__iexact=username, tenant=tenant)
-                if principal.user_id is None and "user_id" in item:
-                    # Some lazily created Principals may not have user_id.
-                    user_id = item["user_id"]
-                    principal.user_id = user_id
-                    principal.save()
             except Principal.DoesNotExist:
-                principal = Principal.objects.create(username=username, tenant=tenant, user_id=item["user_id"])
+                principal = Principal.objects.create(username=username, tenant=tenant, user_id=item.get("user_id"))
                 logger.info("Created new principal %s for org_id %s.", username, org_id)
             group.principals.add(principal)
             new_principals.append(principal)

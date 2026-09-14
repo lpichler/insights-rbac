@@ -16,6 +16,8 @@
 #
 """Backfill remote principals in SpiceDB via TenantMapping update_user."""
 
+import copy
+
 from django.db import transaction
 from management.models import Principal
 
@@ -27,6 +29,10 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     if so, no sync is needed.  System users, service accounts, inactive users,
     and users without a ``user_id`` are skipped.
 
+    Validates the user's org_id against the tenant and falls back to the
+    tenant's org_id when the user has none.  A shallow copy is used when a
+    fallback is needed so the caller's object is never mutated.
+
     Raises on failure — callers that want best-effort behaviour should catch
     exceptions themselves.
 
@@ -34,6 +40,9 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
         bootstrap_service: TenantBootstrapService instance.
         user: User object to sync.
         tenant: Tenant instance for principal lookup.
+
+    Raises:
+        ValueError: If the user's org_id does not match the tenant's org_id.
     """
     if user.system or user.is_service_account:
         return
@@ -42,6 +51,9 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     if not user.user_id or not user.is_active:
         return
 
+    if user.org_id and user.org_id != tenant.org_id:
+        raise ValueError(f"User {user.username} org_id {user.org_id} does not match tenant org_id {tenant.org_id}")
+
     try:
         principal = Principal.objects.get(username__iexact=user.username, tenant=tenant)
         if principal.user_id is not None:
@@ -49,15 +61,20 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     except Principal.DoesNotExist:
         pass  # New principal — needs sync.
 
+    effective_user = user
+    if not user.org_id:
+        effective_user = copy.copy(user)
+        effective_user.org_id = tenant.org_id
+
     with transaction.atomic():
-        bootstrap_service.update_user(user, upsert=True)
+        bootstrap_service.update_user(effective_user, upsert=True)
 
 
 def backfill_remote_principals(bootstrap_service, users, tenant):
     """Backfill a list of users' TenantMapping membership via update_user.
 
-    Validates each user's org_id against the tenant and fills in missing
-    org_ids.  Exceptions propagate to the caller.
+    Delegates org_id validation and backfill to ``backfill_remote_principal``.
+    Exceptions propagate to the caller.
 
     Args:
         bootstrap_service: TenantBootstrapService instance.
@@ -68,8 +85,4 @@ def backfill_remote_principals(bootstrap_service, users, tenant):
         ValueError: If a user's org_id does not match the tenant's org_id.
     """
     for user in users:
-        if not user.org_id:
-            user.org_id = tenant.org_id
-        elif user.org_id != tenant.org_id:
-            raise ValueError(f"User {user.username} org_id {user.org_id} does not match tenant org_id {tenant.org_id}")
         backfill_remote_principal(bootstrap_service, user, tenant)
