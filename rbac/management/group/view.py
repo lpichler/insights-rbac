@@ -587,13 +587,8 @@ class GroupViewSet(
         tenant = self.request.tenant
         new_principals = []
         for item in principals_from_response:
-            # cross-account request principals won't be in the resp from BOP since they don't exist
             username = item["username"]
-            try:
-                principal = Principal.objects.get(username__iexact=username, tenant=tenant)
-            except Principal.DoesNotExist:
-                principal = Principal.objects.create(username=username, tenant=tenant, user_id=item.get("user_id"))
-                logger.info("Created new principal %s for org_id %s.", username, org_id)
+            principal = Principal.objects.get(username__iexact=username, tenant=tenant)
             group.principals.add(principal)
             new_principals.append(principal)
             group_principal_change_notification_handler(self.request.user, group, username, "added")
