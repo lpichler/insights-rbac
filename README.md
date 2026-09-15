@@ -65,6 +65,165 @@ and discovers sibling `../inventory-api` and `../insights-host-inventory`
 checkouts. If either checkout is absent, it creates a shallow clone under
 `.local-deps/`. Ensure the container VM has enough memory for the full stack.
 
+#### Local full-stack quick start
+
+The full-stack command uses the checked-out RBAC source and discovered
+`inventory-api` and `insights-host-inventory` sources. It discovers sibling
+checkouts first and otherwise uses clones under `.local-deps/`. It intentionally
+does not pull existing checkouts, so local work is never overwritten.
+
+##### Latest version of all repositories
+
+With each repository already on the branch you want to test, fast-forward all
+three checkouts, then build and deploy the current RBAC checkout:
+
+```bash
+make docker-local-full-up-latest
+```
+
+The command resolves sibling repositories or the automatically cloned
+`.local-deps/` copies, fast-forwards them sequentially, initializes HBI
+submodules, and then starts the stack. Processing stops at the first
+fast-forward failure (for example because a checkout has local commits or
+conflicts), but repositories updated earlier in the sequence will already
+have been fast-forwarded.
+
+##### Current local RBAC changes
+
+Build and deploy the current RBAC checkout, including uncommitted changes:
+
+```bash
+make docker-local-full-up local
+```
+
+##### An RBAC pull request
+
+To test a pull request without checking out its branch, pass its complete
+GitHub PR URL as the `pr` make variable:
+
+```bash
+make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/3309
+```
+
+The PR command fetches the PR head into a temporary Git worktree, builds an
+`insights-rbac-pr-<number>:dev` image, and starts the integrated stack with
+that image. A normal build forces recreation of the full-Kessel Compose
+services, so the server, migrations, worker, scheduler, and Kafka consumer
+all use the new code. The temporary worktree is removed after startup; the
+locally built image and Compose volumes remain available for testing.
+
+##### An RBAC Config pull request, local checkout, or generated KSL schema
+
+The full stack uses the **stage** configuration by default: the stage role
+ConfigMap and the stage `schema.zed` from `project-kessel/rbac-config`.
+To test an RBAC Config PR with an RBAC PR (or with local RBAC code), pass its
+complete URL using `rbac_config_pr`:
+
+```bash
+make docker-local-full-up \
+  pr=https://github.com/project-kessel/insights-rbac/pull/3309 \
+  rbac_config_pr=https://github.com/project-kessel/rbac-config/pull/123
+```
+
+That selects the PR's stage `_private/configmaps/stage/rbac-config.yml` and
+its generated `configs/stage/schemas/schema.zed`. The files are copied or
+downloaded into Inventory API's local full-Kessel configuration before the
+Relations API starts.
+
+To test changes in a local `rbac-config` checkout instead, use
+`rbac_config_repo`. It uses the checkout's stage ConfigMap and automatically
+runs its non-destructive `ksl-test-schema-stage` target, then loads the
+generated stage schema:
+
+```bash
+make docker-local-full-up local rbac_config_repo="$(cd ../rbac-config && pwd)"
+```
+
+When the local full stack is already running, this command does **not** rebuild
+the local RBAC image or Host Inventory and does not recreate the full stack.
+It refreshes only Relations API (to load the schema), runs `rbac-migrate` (to
+reseed the role definitions), and restarts `rbac-server`. On a first launch,
+it performs the normal full build and startup because the local image and
+dependencies do not exist yet.
+
+During a refresh, the selected schema is also written directly to SpiceDB
+before those services restart, so KSL changes take effect immediately.
+
+By default, this is enough for uncommitted KSL changes. To use a separately
+generated schema file instead, provide `schema_zed_file`:
+
+```bash
+make docker-local-full-up local \
+  rbac_config_repo="$(cd ../rbac-config && pwd)" \
+  schema_zed_file="$(cd ../rbac-config && pwd)/_private/test-schema/stage-schema.zed"
+```
+
+`schema_zed_file` takes precedence only for the SpiceDB schema; the role
+definitions still come from the selected RBAC Config PR or checkout. The
+automatic local build uses the safe `ksl-test-schema-stage` target, which writes
+under `_private/` rather than replacing the committed `schema.zed`.
+
+##### Run the basic V2 API validation
+
+After the stack is healthy, run the basic V2 API lifecycle validation:
+
+```bash
+scripts/validations/api/v2-crud.sh
+```
+
+The validator requires no identity setup. It exercises every V2 API route:
+workspace CRUD/query/move, role CRUD, role-binding create/read/update, and the
+read-only principal routes. It temporarily enables V2 writes and adds the
+minimum local Kessel authorization tuples, then removes its test resources and
+restores the original V2-write setting and Kessel graph. It prints the direct
+Kessel tuples for read-only scenarios and verifies the expected persisted tuple
+after every write; deletion checks verify that the tuple disappears.
+
+The validator creates a temporary user from an in-memory YAML fixture in
+`org_id=11111` with a unique `v2-crud-user-<timestamp>-<pid>` identity. It
+deletes that user, its temporary role, and its binding during cleanup. The
+workspace RYW validation uses the existing local seeded V2 identity by
+default: `org_id=11111`, account `10001`, `user_dev`, user ID `51736777`.
+The identity can be overridden with `RYW_ORG_ID`, `RYW_ACCOUNT_ID`,
+`RYW_USERNAME`, and `RYW_USER_ID`; the full mapping is listed in the
+[local Docker/Podman validation guide](docs/local-docker-validation.md).
+The full stack includes HBI, but the current RYW helper validates the RBAC
+workspace path only; `--check-hbi` is informational until an HBI assertion is
+implemented.
+
+To inspect the organizations, persisted users/principals, V2 roles, and role
+bindings in the running RBAC container, run the read-only action:
+
+```bash
+scripts/validations/api/actions/list-rbac-users.sh
+```
+
+The same action can generate a local admin or non-admin identity for V1 or V2
+API testing; see the [local Docker/Podman validation guide](docs/local-docker-validation.md).
+
+To create persisted local users, bootstrap a tenant, and configure groups,
+V2 roles, and role bindings, apply the declarative fixture described in the
+[local Docker/Podman validation guide](docs/local-docker-validation.md):
+
+```bash
+scripts/validations/api/actions/apply-rbac-users-config.sh
+```
+
+##### Run every local validation
+
+Run every shell validation below `scripts/validations/` in lexical order. The
+command stops at the first failure:
+
+```bash
+make docker-local-full-validate
+```
+
+See [Local Validation Script Guidelines](docs/validation-script-guidelines.md)
+when adding a validation for a new feature.
+
+For the complete local Docker/Podman startup and validation workflow, see the
+[Local Docker/Podman validation guide](docs/local-docker-validation.md).
+
 Useful endpoints after startup:
 
 | Service | Endpoint |
@@ -78,7 +237,7 @@ Useful endpoints after startup:
 For an existing image, skip the RBAC build:
 
 ```bash
-./scripts/local_stack/up-full.sh --no-build
+RBAC_IMAGE=<existing-image-tag> ./scripts/local_stack/up-full.sh --no-build
 ```
 
 To start only Kessel, Debezium, and RBAC, omit Host Inventory:
@@ -92,7 +251,7 @@ the workspace is visible through Kessel Inventory, which Host Inventory uses
 as its workspace source of truth:
 
 ```bash
-./scripts/create_workspace_local.sh --no-start --check-hbi
+./scripts/validations/api/create-workspace-local.sh --no-start --check-hbi
 ```
 
 Stop the full stack with `make docker-local-full-down`. This preserves volumes;

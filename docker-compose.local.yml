@@ -15,7 +15,7 @@
 #   Mock Kessel:  localhost:50051 (gRPC)
 #
 # Create a workspace (after stack is healthy):
-#   ./scripts/create_workspace_local.sh --no-start --count 1
+#   ./scripts/validations/api/create-workspace-local.sh --no-start --count 1
 #   # use API_URL=http://localhost:9080; stack uses mock Kessel by default
 #
 # Real stage Kessel instead of mock (requires port-forward on host :9000):
