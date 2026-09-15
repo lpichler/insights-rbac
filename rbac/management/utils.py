@@ -16,29 +16,35 @@
 #
 """Helper utilities for management module."""
 
+import hmac
 import logging
 import os
 import re
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import ClassVar, Optional, TypedDict
+from urllib.parse import urlparse
 from uuid import UUID
 
 import grpc
+import requests
 from django.conf import settings
 from django.core.exceptions import PermissionDenied
 from django.utils.translation import gettext as _
 from kessel.auth import OAuth2ClientCredentials
-from kessel.grpc import oauth2_call_credentials
 from management.authorization.invalid_token import InvalidTokenError
 from management.authorization.missing_authorization import MissingAuthorizationError
 from management.authorization.token_validator import TokenValidator
 from management.cache import PrincipalCache
+from management.exceptions import InventoryAuthUnavailableError
 from management.models import Access, Group, Policy, Principal, Role
 from management.permissions.principal_access import PrincipalAccessPermission
 from management.principal.it_service import ITService
 from management.principal.proxy import PrincipalProxy
+from prometheus_client import Counter
+from requests.adapters import HTTPAdapter
 from rest_framework import serializers
 from rest_framework.fields import UUIDField
 from rest_framework.request import Request
@@ -56,14 +62,124 @@ SERVICE_ACCOUNT_KEY = "service-account"
 
 logger = logging.getLogger(__name__)
 
+INVENTORY_AUTH_TOKEN_RETRIES = 2
+INVENTORY_AUTH_TOKEN_CONNECT_TIMEOUT_SECONDS = 5
+INVENTORY_AUTH_TOKEN_READ_TIMEOUT_SECONDS = 10
+INVENTORY_AUTH_TOKEN_BACKOFF_SECONDS = 0.25
+
+inventory_auth_token_retries_total = Counter(
+    "rbac_inventory_auth_token_retries_total",
+    "Number of retries while obtaining an Inventory API OAuth token",
+)
+inventory_auth_token_failures_total = Counter(
+    "rbac_inventory_auth_token_failures_total",
+    "Number of failed Inventory API OAuth token requests after retries",
+)
+
+
+class _InventoryAuthTimeoutAdapter(HTTPAdapter):
+    """Apply a bounded timeout to token requests made by the SDK session."""
+
+    def send(self, request, **kwargs):
+        """Send a token request with connect and read timeouts when none is supplied."""
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = (
+                INVENTORY_AUTH_TOKEN_CONNECT_TIMEOUT_SECONDS,
+                INVENTORY_AUTH_TOKEN_READ_TIMEOUT_SECONDS,
+            )
+        return super().send(request, **kwargs)
+
+
 # Configure OAuth credentials with direct token URL for Inventory API
 inventory_auth_credentials = OAuth2ClientCredentials(
     client_id=settings.INVENTORY_API_CLIENT_ID,
     client_secret=settings.INVENTORY_API_CLIENT_SECRET,
     token_endpoint=settings.INVENTORY_API_TOKEN_URL,  # Direct token endpoint
 )
+# The SDK does not expose its requests session. Configure its HTTPS adapter here so
+# token acquisition cannot wait indefinitely on a dead connection.
+inventory_auth_credentials._session.mount("https://", _InventoryAuthTimeoutAdapter())
 
-call_credentials = oauth2_call_credentials(inventory_auth_credentials)
+
+def _reset_inventory_auth_session() -> None:
+    """Close pooled token connections before retrying a transient request failure."""
+    session = getattr(inventory_auth_credentials, "_session", None)
+    if session is not None:
+        session.close()
+
+
+def _get_inventory_auth_token():
+    """Fetch an Inventory OAuth token with bounded retries for transport failures."""
+    max_attempts = INVENTORY_AUTH_TOKEN_RETRIES + 1
+    endpoint_host = urlparse(settings.INVENTORY_API_TOKEN_URL).hostname or "unknown"
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            token_response = inventory_auth_credentials.get_token()
+            if attempt > 1:
+                logger.info(
+                    "Inventory API OAuth token request recovered after retries: "
+                    "endpoint_host=%s attempts=%d retries=%d",
+                    endpoint_host,
+                    attempt,
+                    attempt - 1,
+                )
+            return token_response
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+            retries = attempt - 1
+            if attempt == max_attempts:
+                inventory_auth_token_failures_total.inc()
+                logger.warning(
+                    "Inventory API OAuth token request exhausted retries: "
+                    "endpoint_host=%s attempts=%d retries=%d error_type=%s",
+                    endpoint_host,
+                    attempt,
+                    retries,
+                    type(exc).__name__,
+                    exc_info=True,
+                )
+                raise
+
+            inventory_auth_token_retries_total.inc()
+            logger.warning(
+                "Inventory API OAuth token request failed; retrying: "
+                "endpoint_host=%s attempt=%d/%d retries=%d error_type=%s",
+                endpoint_host,
+                attempt,
+                max_attempts,
+                retries + 1,
+                type(exc).__name__,
+            )
+            _reset_inventory_auth_session()
+            time.sleep(INVENTORY_AUTH_TOKEN_BACKOFF_SECONDS * (2**retries))
+
+
+def get_inventory_auth_metadata() -> list:
+    """Build gRPC auth metadata for Inventory API calls using OAuth2 client credentials.
+
+    Returns empty metadata (unauthenticated) only when Inventory API credentials aren't
+    configured at all, e.g. local/ephemeral environments where Inventory API doesn't
+    enforce auth. If credentials are configured but the token fetch fails or returns no
+    access_token, this raises rather than silently returning unauthenticated metadata --
+    swallowing that failure is what caused every Inventory API call to go out
+    unauthenticated in a prior incident.
+    """
+    if not settings.INVENTORY_API_CLIENT_ID or not settings.INVENTORY_API_CLIENT_SECRET:
+        return []
+    try:
+        token_response = _get_inventory_auth_token()
+    except requests.exceptions.RequestException as exc:
+        token_endpoint_host = urlparse(settings.INVENTORY_API_TOKEN_URL).hostname or "unknown"
+        logger.warning(
+            "Inventory API OAuth token request failed at SSO endpoint: endpoint_host=%s error_type=%s",
+            token_endpoint_host,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        raise InventoryAuthUnavailableError() from exc
+    if not token_response.access_token:
+        raise RuntimeError("Inventory API OAuth token response did not include an access_token")
+    return [("authorization", f"Bearer {token_response.access_token}")]
 
 
 @contextmanager
@@ -86,15 +202,18 @@ def create_client_channel(addr):
 
 @contextmanager
 def create_client_channel_inventory(addr):
-    """Create secure channel for grpc requests for inventory api."""
+    """Create secure channel for grpc requests for inventory api.
+
+    Uses insecure channel in development/Clowder environments, TLS otherwise.
+    Auth is attached per-call via get_inventory_auth_metadata() rather than at the
+    channel level, since insecure channels can't carry gRPC call credentials.
+    """
     if settings.DEVELOPMENT or os.getenv("CLOWDER_ENABLED", "false").lower() == "true":
         channel = grpc.insecure_channel(addr)
         yield channel
     else:
-        # Combine with TLS for secure channel
         ssl_credentials = grpc.ssl_channel_credentials()
-        channel_credentials = grpc.composite_channel_credentials(ssl_credentials, call_credentials)
-        secure_channel = grpc.secure_channel(addr, channel_credentials)
+        secure_channel = grpc.secure_channel(addr, ssl_credentials)
         yield secure_channel
 
 
@@ -118,14 +237,23 @@ def create_client_channel_relation(addr):
 
 
 def validate_psk(psk, client_id):
-    """Validate the PSK for the client."""
+    """Validate the PSK for the client using constant-time comparison."""
     psks = settings.SERVICE_PSKS
     client_config = psks.get(client_id, {})
-    primary_key = client_config.get("secret")
-    alt_key = client_config.get("alt-secret")
+    primary_key = client_config.get("secret") or ""
+    alt_key = client_config.get("alt-secret") or ""
+    has_primary_key = bool(primary_key)
+    has_alt_key = bool(alt_key)
+    psk = psk or ""
 
     if psks:
-        return psk == primary_key or psk == alt_key
+        try:
+            primary_match = hmac.compare_digest(psk, primary_key)
+            alt_match = hmac.compare_digest(psk, alt_key)
+        except TypeError as e:
+            logger.warning("PSK validation TypeError for client_id=%s: %s", client_id, e)
+            return False
+        return (has_primary_key and primary_match) or (has_alt_key and alt_match)
 
     return False
 
@@ -670,9 +798,28 @@ PROBLEM_TITLES = {
     500: "Unexpected error occurred.",
 }
 
+# RFC 9457 problem type URIs matching the TypeSpec ProblemType enum.
+# Each URI identifies a specific problem category for machine-readable error handling.
+PROBLEM_TYPES = {
+    400: "http://project-kessel.org/problems/invalid-request",
+    401: "http://project-kessel.org/problems/unauthenticated",
+    403: "http://project-kessel.org/problems/insufficient-permission",
+    404: "http://project-kessel.org/problems/not-found",
+    500: "http://project-kessel.org/problems/internal-error",
+}
 
-def v2response_error_from_errors(errors, exc=None, context=None):
-    """Build a ProblemDetails-formatted error response from errors."""
+
+def v2response_error_from_errors(errors, exc=None, context=None, problem_type=None):
+    """Build a ProblemDetails-formatted error response from errors.
+
+    Args:
+        errors: List of error dicts with "detail", "status", and optional "source" keys.
+        exc: The original exception (optional).
+        context: DRF context dict with "request" (optional).
+        problem_type: Explicit RFC 9457 problem type URI override. When set, this
+            takes precedence over the default status-code-based lookup in PROBLEM_TYPES.
+            Use for specialized problem types like "http://project-kessel.org/problems/already-exists".
+    """
     detail = ""
     status_code = 0
     field_errors = []
@@ -688,11 +835,16 @@ def v2response_error_from_errors(errors, exc=None, context=None):
                     field_error["field"] = error["source"]
                 field_errors.append(field_error)
 
+    resolved_type = problem_type or PROBLEM_TYPES.get(status_code)
+
     response = {
         "status": status_code,
         "title": PROBLEM_TITLES.get(status_code, "An error occurred."),
         "detail": detail,
     }
+
+    if resolved_type:
+        response["type"] = resolved_type
 
     if field_errors:
         response["errors"] = field_errors

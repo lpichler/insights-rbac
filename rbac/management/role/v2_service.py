@@ -27,9 +27,18 @@ from django.db import IntegrityError
 from django.db.models import QuerySet
 from management.atomic_transactions import atomic
 from management.exceptions import NotFoundError, RequiredFieldError
+from management.inventory_replicator.inventory_replicator import (
+    InventoryReplicator,
+    PartitionKey,
+    ReplicationEvent,
+    ReplicationEventType,
+)
+from management.inventory_replicator.noop_replicator import NoopReplicator
+from management.inventory_replicator.outbox_replicator import OutboxReplicator
 from management.permission.exceptions import InvalidPermissionDataError
 from management.permission.model import PermissionValue
 from management.permission.scope_service import (
+    CONCRETE_SCOPES,
     SCOPE_DISPLAY_NAME,
     Scope,
     default_implicit_resource_service,
@@ -38,14 +47,6 @@ from management.permission.scope_service import (
     scopes_for_resource_type,
 )
 from management.permission.service import PermissionService
-from management.relation_replicator.noop_replicator import NoopReplicator
-from management.relation_replicator.outbox_replicator import OutboxReplicator
-from management.relation_replicator.relation_replicator import (
-    PartitionKey,
-    RelationReplicator,
-    ReplicationEvent,
-    ReplicationEventType,
-)
 from management.role.v2_exceptions import (
     CustomRoleRequiredError,
     InvalidRolePermissionsError,
@@ -80,7 +81,7 @@ class RoleV2Service:
     def __init__(
         self,
         tenant: Tenant | None = None,
-        replicator: RelationReplicator | None = None,
+        replicator: InventoryReplicator | None = None,
     ):
         """Initialize the service."""
         self.tenant = tenant
@@ -124,10 +125,11 @@ class RoleV2Service:
         for p in permissions:
             scope = default_implicit_resource_service.scope_for_permission(p.permission)
             perms_by_scope.setdefault(scope, []).append(p.permission)
-        if len(perms_by_scope) > 1:
+        concrete_scopes = {s: p for s, p in perms_by_scope.items() if s != Scope.ALL}
+        if len(concrete_scopes) > 1:
             details = "; ".join(
                 f"{SCOPE_DISPLAY_NAME[scope]}: {', '.join(sorted(perms))}"
-                for scope, perms in sorted(perms_by_scope.items())
+                for scope, perms in sorted(concrete_scopes.items())
             )
             raise InvalidRolePermissionsError(
                 f"All permissions in a role must belong to the same scope. Found: {details}"
@@ -320,7 +322,7 @@ class RoleV2Service:
             else:
                 matching_scopes = {Scope.DEFAULT}
 
-        higher_non_matching = {s for s in (set(Scope) - matching_scopes) if s > max(matching_scopes)}
+        higher_non_matching = {s for s in (CONCRETE_SCOPES - matching_scopes) if s > max(matching_scopes)}
 
         if Scope.DEFAULT not in matching_scopes:
             matching_ids = permission_scope_cache.ids_for_scopes(matching_scopes)

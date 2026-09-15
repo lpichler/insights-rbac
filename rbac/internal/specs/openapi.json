@@ -56,10 +56,6 @@
       "description": "Operations related to inventory api."
     },
     {
-      "name": "Relations",
-      "description": "Operations related to relations api."
-    },
-    {
       "name": "Permission",
       "description": "Operations about permissions."
     },
@@ -1749,8 +1745,8 @@
           "Tenant",
           "Utils"
         ],
-        "summary": "Bootstrap a tenants by org ids",
-        "description": "Bootstrap a tenants by org ids",
+        "summary": "Bootstrap tenants by org ids",
+        "description": "Bootstrap tenants by org ids. By default returns 404 if the Tenant row does not exist; pass create_missing=true to create it. Optionally accepts a tenants array with ungrouped_hosts_id to create the ungrouped-hosts workspace with a caller-supplied UUID.",
         "operationId": "TenantBootstrap",
         "requestBody": {
           "required": true,
@@ -1764,12 +1760,52 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "A list of organization IDs to bootstrap."
+                    "description": "Legacy: list of organization IDs to bootstrap. Mutually exclusive with tenants."
+                  },
+                  "tenants": {
+                    "type": "array",
+                    "description": "List of tenants to bootstrap. Mutually exclusive with org_ids.",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "org_id"
+                      ],
+                      "properties": {
+                        "org_id": {
+                          "type": "string",
+                          "description": "Organization ID to bootstrap."
+                        },
+                        "ungrouped_hosts_id": {
+                          "type": "string",
+                          "format": "uuid",
+                          "description": "Optional UUID for the ungrouped-hosts workspace. When set, creates that workspace under the default workspace."
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "examples": {
+                "org_ids": {
+                  "summary": "Legacy org_ids body",
+                  "value": {
+                    "org_ids": [
+                      "12345",
+                      "67890"
+                    ]
                   }
                 },
-                "required": [
-                  "org_ids"
-                ]
+                "tenants_with_ungrouped": {
+                  "summary": "Create tenant with supplied ungrouped-hosts id",
+                  "value": {
+                    "tenants": [
+                      {
+                        "org_id": "12345",
+                        "ungrouped_hosts_id": "0194a1b2-c3d4-7890-abcd-ef1234567890"
+                      }
+                    ]
+                  }
+                }
               }
             }
           }
@@ -1790,6 +1826,16 @@
             "in": "query",
             "required": false,
             "description": "Re-replicate only admin default bindings. This is SAFE even when replication is on because admin default bindings are NOT customizable (unlike platform default bindings). Use this to fix tenants that were bootstrapped before admin default groups were seeded.",
+            "schema": {
+              "default": false,
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "create_missing",
+            "in": "query",
+            "required": false,
+            "description": "When true, create a Tenant row if one does not exist for the org_id, then bootstrap it. Default false returns 404 for missing tenants to avoid accidental creation.",
             "schema": {
               "default": false,
               "type": "boolean"
@@ -1838,7 +1884,17 @@
             }
           },
           "400": {
-            "description": "Invalid request, must supply the 'org_id' query parameter.",
+            "description": "Invalid request body, invalid ungrouped_hosts_id, workspace ID conflict, or force=true while replication is enabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found for the given org_id when create_missing is false (default).",
             "content": {
               "application/json": {
                 "schema": {
@@ -2528,6 +2584,165 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/utils/tenant_org_config/{org_id}/": {
+      "get": {
+        "tags": [
+          "Tenant",
+          "Utils",
+          "Workspace"
+        ],
+        "summary": "Get per-org configuration",
+        "description": "Returns stored org_config overrides and the effective workspace creation limit. An empty org_config means all global defaults are used (WORKSPACE_ORG_CREATION_LIMIT).",
+        "operationId": "GetTenantOrgConfig",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "description": "Organization ID of the tenant",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-org configuration and effective workspace creation limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantOrgConfig"
+                },
+                "example": {
+                  "org_id": "12345678",
+                  "org_config": {
+                    "workspace_creation_limit": 500
+                  },
+                  "workspace_creation_limit": 500
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSingle"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Invalid method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSingle"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Tenant",
+          "Utils",
+          "Workspace"
+        ],
+        "summary": "Update per-org configuration",
+        "description": "Merges a partial org_config update. Only workspace_creation_limit is allowed. A null value removes the override so the global WORKSPACE_ORG_CREATION_LIMIT is used. Unknown keys are rejected. Does not require destructive_ok.",
+        "operationId": "PatchTenantOrgConfig",
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "description": "Organization ID of the tenant",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TenantOrgConfigPatch"
+              },
+              "examples": {
+                "setLimit": {
+                  "summary": "Set a per-org workspace creation limit",
+                  "value": {
+                    "workspace_creation_limit": 500
+                  }
+                },
+                "unsetLimit": {
+                  "summary": "Remove the override and use the global default",
+                  "value": {
+                    "workspace_creation_limit": null
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated per-org configuration and effective workspace creation limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantOrgConfig"
+                },
+                "example": {
+                  "org_id": "12345678",
+                  "org_config": {
+                    "workspace_creation_limit": 500
+                  },
+                  "workspace_creation_limit": 500
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid JSON, unknown keys, or invalid workspace_creation_limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSingle"
+                },
+                "example": {
+                  "error": "workspace_creation_limit must be an integer >= 1, or null to unset."
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSingle"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Invalid method.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorSingle"
                 }
               }
             }
@@ -3585,29 +3800,29 @@
         }
       }
     },
-    "/api/relations/lookup_resource/": {
+    "/api/inventory/lookup_resource/": {
       "post": {
         "tags": [
-          "Relations"
+          "Inventory"
         ],
-        "summary": "Get a resource from relations api.",
-        "description": "Returns resource from relations api.",
+        "summary": "Get a resource from the inventory api.",
+        "description": "Returns resources from the inventory api that have the given relation to the given subject.",
         "requestBody": {
           "content": {
             "application/json": {
               "example": {
                 "resource_type": {
-                  "name": "group",
-                  "namespace": "rbac"
+                  "resource_type": "group",
+                  "reporter_type": "rbac"
                 },
                 "relation": "member",
                 "subject": {
-                  "subject": {
-                    "type": {
-                      "namespace": "rbac",
-                      "name": "principal"
-                    },
-                    "id": "bob"
+                  "resource": {
+                    "resource_id": "bob",
+                    "resource_type": "principal",
+                    "reporter": {
+                      "type": "rbac"
+                    }
                   }
                 }
               }
@@ -3626,27 +3841,7 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "properties": {
-                          "resource": {
-                            "type": "object",
-                            "properties": {
-                              "type": {
-                                "type": "object",
-                                "properties": {
-                                  "namespace": {
-                                    "type": "string"
-                                  },
-                                  "name": {
-                                    "type": "string"
-                                  }
-                                }
-                              },
-                              "id": {
-                                "type": "string"
-                              }
-                            }
-                          }
-                        }
+                        "description": "A resource reference from the inventory API"
                       }
                     }
                   }
@@ -3654,12 +3849,9 @@
                 "example": {
                   "resources": [
                     {
-                      "resource": {
-                        "type": {
-                          "namespace": "rbac",
-                          "name": "group"
-                        },
-                        "id": "bob_club"
+                      "object": {
+                        "resourceType": "group",
+                        "resourceId": "bob_club"
                       }
                     }
                   ]
@@ -3697,75 +3889,66 @@
         }
       }
     },
-    "/api/relations/check_relation/": {
+    "/api/inventory/lookup_subjects/": {
       "post": {
         "tags": [
-          "Relations"
+          "Inventory"
         ],
-        "summary": "Check a relationship in the relations api.",
-        "description": "Checks if a relationship exists between a resource and subject in the relations api.",
+        "summary": "Get subjects from the inventory api.",
+        "description": "Returns subjects from the inventory api that have the given relation to the given resource.",
         "requestBody": {
           "content": {
             "application/json": {
               "example": {
                 "resource": {
-                  "type": {
-                    "name": "group",
-                    "namespace": "rbac"
-                  },
-                  "id": "bob_club"
+                  "resource_id": "bob_club",
+                  "resource_type": "group",
+                  "reporter": {
+                    "type": "rbac"
+                  }
                 },
                 "relation": "member",
-                "subject": {
-                  "subject": {
-                    "type": {
-                      "namespace": "rbac",
-                      "name": "principal"
-                    },
-                    "id": "bob"
-                  }
-                }
+                "subject_type": {
+                  "resource_type": "principal",
+                  "reporter_type": "rbac"
+                },
+                "subject_relation": ""
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Relation check result returned.",
+            "description": "Subjects returned.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "allowed": {
-                      "type": "boolean",
-                      "example": true
+                    "subjects": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "description": "A subject reference from the inventory API"
+                      }
                     }
                   }
                 },
                 "example": {
-                  "allowed": true
+                  "subjects": [
+                    {
+                      "subject": {
+                        "resourceType": "principal",
+                        "resourceId": "bob"
+                      }
+                    }
+                  ]
                 }
               }
             }
           },
           "204": {
-            "description": "No relation found."
-          },
-          "400": {
-            "description": "gRPC Error",
-            "content": {
-              "application/json": {
-                "examples": {
-                  "gRPCError": {
-                    "value": {
-                      "detail": "Error occurred in gRPC call",
-                      "error": "gRPC Error"
-                    }
-                  }
-                }
-              }
-            }
+            "description": "No subjects found."
           },
           "500": {
             "description": "Unexpected Error",
@@ -3775,9 +3958,15 @@
                   "$ref": "#/components/schemas/Error500"
                 },
                 "examples": {
+                  "gRPCError": {
+                    "value": {
+                      "detail": "Error occurred in gRPC call",
+                      "error": "gRPC Error"
+                    }
+                  },
                   "Error": {
                     "value": {
-                      "detail": "Error occurred in call to check relation endpoint",
+                      "detail": "Error occurred in call to lookup subjects endpoint",
                       "error": "Error message"
                     }
                   }
@@ -3788,13 +3977,13 @@
         }
       }
     },
-    "/api/relations/read_tuples/": {
+    "/api/inventory/read_tuples/": {
       "post": {
         "tags": [
-          "Relations"
+          "Inventory"
         ],
-        "summary": "Read tuples from the relations api.",
-        "description": "Reads relation tuples from the relations api based on filter criteria.",
+        "summary": "Read tuples from the inventory api.",
+        "description": "Reads relation tuples from the inventory api based on filter criteria.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -3827,7 +4016,7 @@
                       "type": "array",
                       "items": {
                         "type": "object",
-                        "description": "A relation tuple from the relations API"
+                        "description": "A relation tuple from the inventory API"
                       }
                     }
                   }
@@ -6116,6 +6305,52 @@
             }
           }
         ]
+      },
+      "TenantOrgConfig": {
+        "type": "object",
+        "required": [
+          "org_id",
+          "org_config",
+          "workspace_creation_limit"
+        ],
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "description": "Organization ID of the tenant",
+            "example": "12345678"
+          },
+          "org_config": {
+            "type": "object",
+            "description": "Stored per-org overrides. Empty object means all global defaults are used.",
+            "additionalProperties": true,
+            "example": {
+              "workspace_creation_limit": 500
+            }
+          },
+          "workspace_creation_limit": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Effective workspace creation limit after applying org_config and the global WORKSPACE_ORG_CREATION_LIMIT default.",
+            "example": 500
+          }
+        }
+      },
+      "TenantOrgConfigPatch": {
+        "type": "object",
+        "minProperties": 1,
+        "description": "Partial org_config update. Only workspace_creation_limit is allowed. Null unsets the override.",
+        "additionalProperties": false,
+        "properties": {
+          "workspace_creation_limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Per-org workspace creation limit. Null removes the override so the global WORKSPACE_ORG_CREATION_LIMIT is used.",
+            "example": 500
+          }
+        }
       },
       "OrgAdmin": {
         "allOf": [

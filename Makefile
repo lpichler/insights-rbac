@@ -1,5 +1,7 @@
 PYTHON	= $(shell which python)
 
+.DEFAULT_GOAL := help
+
 TOPDIR  = $(shell pwd)
 PYDIR	= rbac
 
@@ -27,7 +29,6 @@ Please use `make <target>` where <target> is one of:
 --- General Commands ---
   clean                    clean the project directory of any scratch files, bytecode, logs, etc.
   help                     show this message
-  html                     create html documentation for the project
   lint                     run linting against the project
   format                   format linting errors found by lint task
   typecheck                run type check
@@ -56,6 +57,26 @@ Please use `make <target>` where <target> is one of:
   docker-logs               connect to console logs for all services
   docker-grype				Run security checks on the project image(s)
 
+--- Commands using the local full Kessel stack ---
+  docker-local-full-up local
+                            build and start the current local RBAC checkout
+  docker-local-full-up pr=<GitHub-PR-URL>
+                            build and start an RBAC pull request in a temporary worktree
+  docker-local-full-up local rbac_config_pr=<GitHub-PR-URL>
+                            use the stage role definitions and schema from an RBAC Config PR
+                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC server
+  docker-local-full-up local rbac_config_repo=<path>
+                            build its stage KSL schema and use its local role definitions
+  docker-local-full-up pr=<RBAC-PR-URL> rbac_config_pr=<Config-PR-URL>
+                            test RBAC and RBAC Config pull requests together
+  docker-local-full-up local rbac_config_pr=<Config-PR-URL> schema_zed_file=<path>
+                            use a local generated schema with an RBAC Config PR
+  docker-local-full-up-latest
+                            update local dependencies, then build and start this checkout
+  docker-local-full-validate
+                            run all scripts below scripts/validations/
+  docker-local-full-down   stop the local full Kessel stack (keeps volumes)
+
 --- Commands using an OpenShift Cluster ---
   oc-clean                 stop openshift cluster & remove local config data
   oc-create-all            run all application services in openshift cluster
@@ -81,9 +102,6 @@ help:
 
 clean:
 	git clean -fdx -e .idea/ -e *env/
-
-html:
-	@pipenv run sphinx-build -b html docs/source docs/_build/html
 
 lint:
 	tox -elint
@@ -302,6 +320,43 @@ docker-up:
 	@docker network ls --format '{{.Name}}' |grep -q  rbac-network > /dev/null 2>&1 && echo "" || docker network create rbac-network
 	docker-compose up --build -d
 
+docker-local-up:
+	docker compose -f docker-compose.local.yml up --build -d
+
+docker-local-down:
+	docker compose -f docker-compose.local.yml down
+
+docker-local-logs:
+	docker compose -f docker-compose.local.yml logs -f
+
+PR_URL ?= $(pr)
+RBAC_CONFIG_PR_URL ?= $(rbac_config_pr)
+RBAC_CONFIG_REPO ?= $(rbac_config_repo)
+SCHEMA_ZED_FILE ?= $(schema_zed_file)
+
+docker-local-full-up:
+	RBAC_PR_URL="$(PR_URL)" RBAC_CONFIG_PR_URL="$(RBAC_CONFIG_PR_URL)" RBAC_CONFIG_REPO="$(RBAC_CONFIG_REPO)" SCHEMA_ZED_FILE="$(SCHEMA_ZED_FILE)" ./scripts/local_stack/up-full.sh $(if $(strip $(PR_URL)),pr,$(if $(filter pr,$(MAKECMDGOALS)),pr,local))
+
+.PHONY: docker-local-full-up-latest
+docker-local-full-up-latest:
+	git pull --ff-only
+	./scripts/local_stack/up-full.sh --pull-dependencies local
+
+.PHONY: docker-local-full-validate
+docker-local-full-validate:
+	@set -e; for script in $$(find scripts/validations -type f -name '*.sh' | sort); do \
+		printf '\n==> %s\n' "$$script"; \
+		bash "$$script"; \
+	done
+
+# Allow `make docker-local-full-up pr=<github-pr-url>` and
+# `make docker-local-full-up local`.
+pr local:
+	@:
+
+docker-local-full-down:
+	./scripts/local_stack/down-full.sh
+
 docker-logs:
 	docker-compose logs -f
 
@@ -314,5 +369,3 @@ docker-down:
 
 generate_v2_spec:
 	cd docs/source/specs/typespec/ && npm ci --silent && ./compile_tsp_spec
-
-.PHONY: docs
