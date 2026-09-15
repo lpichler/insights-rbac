@@ -31,6 +31,50 @@ export DOCKER="${CONTAINER_RUNTIME}"
 export COMPOSE_PULL_MODE="${COMPOSE_PULL_MODE:-missing}"
 export RBAC_IMAGE="${RBAC_IMAGE:?RBAC_IMAGE must be set by up-full.sh}"
 
+write_spicedb_schema() {
+  local spicedb_token schema_file
+  schema_file="${COMPOSE_DIR}/configs/schema.zed"
+  spicedb_token=$(awk -F= '$1 == "SPICEDB_GRPC_PRESHARED_KEY" {print substr($0, index($0, "=") + 1); exit}' "${ENV_FILE}")
+  [[ -n "${spicedb_token}" ]] || {
+    log-err "SPICEDB_GRPC_PRESHARED_KEY is missing from ${ENV_FILE}"
+    exit 1
+  }
+
+  # Relations API reads this file but does not reliably write it into SpiceDB
+  # during startup. Apply it directly before dependent services are restarted.
+  log-info 'Applying schema directly to SpiceDB...'
+  "${CONTAINER_RUNTIME}" run --rm --network kessel \
+    -e "ZED_TOKEN=${spicedb_token}" \
+    -e ZED_ENDPOINT=spicedb:50051 \
+    -e ZED_INSECURE=true \
+    -v "${schema_file}:/schema.zed:ro,z" \
+    docker.io/authzed/zed:latest schema write /schema.zed
+}
+
+if [[ "${RBAC_CONFIG_REFRESH:-false}" == true ]]; then
+  # schema.zed is mounted only by Relations API. Role definitions are consumed
+  # by rbac-migrate during seeding and mounted by rbac-server. Everything else
+  # continues running with the unchanged image and dependencies.
+  write_spicedb_schema
+  log-info 'Restarting Relations API, reseeding RBAC roles, and restarting RBAC server...'
+  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
+    --profile relations --profile consumer --profile rbac \
+    -f "${COMPOSE_DIR}/docker-compose.yaml" \
+    -f "${RBAC_OVERRIDE}" \
+    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps relations-api
+  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
+    --profile relations --profile consumer --profile rbac \
+    -f "${COMPOSE_DIR}/docker-compose.yaml" \
+    -f "${RBAC_OVERRIDE}" \
+    up --pull "${COMPOSE_PULL_MODE}" --force-recreate --no-deps rbac-migrate
+  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
+    --profile relations --profile consumer --profile rbac \
+    -f "${COMPOSE_DIR}/docker-compose.yaml" \
+    -f "${RBAC_OVERRIDE}" \
+    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps rbac-server
+  exit 0
+fi
+
 compose_up_args=(up --pull "${COMPOSE_PULL_MODE}" -d)
 if [[ "${RBAC_FORCE_RECREATE:-false}" == "true" ]]; then
   compose_up_args+=(--force-recreate)
