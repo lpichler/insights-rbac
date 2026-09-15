@@ -13,7 +13,12 @@
 #     ../insights-host-inventory  or  HBI_REPO
 #
 # Usage:
-#   make docker-local-full-up
+#   make docker-local-full-up local
+#   make docker-local-full-up-latest
+#   make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/<number>
+#   make docker-local-full-up pr=<rbac-pr-url> rbac_config_pr=<rbac-config-pr-url>
+#   make docker-local-full-up local rbac_config_repo=../rbac-config
+#   make docker-local-full-up local schema_zed_file=/path/to/stage-schema.zed
 #   ./scripts/local_stack/up-full.sh
 #   ./scripts/local_stack/up-full.sh --no-hbi
 #   ./scripts/local_stack/up-full.sh --no-build
@@ -29,24 +34,41 @@ source "${SCRIPT_DIR}/../common/container_runtime.sh"
 
 INVENTORY_API_REPO="${INVENTORY_API_REPO:-${KESSEL_REPO:-}}"
 HBI_REPO="${HBI_REPO:-}"
-RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-local:dev}"
+RBAC_PR_NUMBER="${RBAC_PR_NUMBER:-}"
+RBAC_IMAGE="${RBAC_IMAGE:-}"
+RBAC_PR_URL="${RBAC_PR_URL:-}"
+RBAC_CONFIG_PR_URL="${RBAC_CONFIG_PR_URL:-}"
+RBAC_CONFIG_REPO="${RBAC_CONFIG_REPO:-}"
+RBAC_CONFIG_REFRESH=false
 COMPOSE_PULL_MODE="${COMPOSE_PULL_MODE:-missing}"
 SKIP_HBI=false
 SKIP_BUILD=false
+PULL_DEPENDENCIES=false
 HBI_COMPOSE_PROJECT="${HBI_COMPOSE_PROJECT:-hbi-kessel-local}"
+DEPLOYMENT_SOURCE="${RBAC_DEPLOYMENT_SOURCE:-local}"
 
 usage() {
   cat <<'EOF'
-Usage: up-full.sh [options]
+Usage: up-full.sh [pr|local] [options]
+
+  pr            Build the current checkout as insights-rbac-pr-<number>:dev.
+  local         Build the current checkout as insights-rbac-local:dev (default).
 
   --no-hbi      Start Kessel + Debezium + RBAC only (skip Host Inventory)
   --no-build    Skip building the local RBAC image (use existing RBAC_IMAGE tag)
+  --pull-dependencies
+                Fast-forward the resolved Inventory API and Host Inventory checkouts
   -h, --help    Show this help
 
 Environment:
   INVENTORY_API_REPO   Path to project-kessel/inventory-api checkout
   HBI_REPO             Path to RedHatInsights/insights-host-inventory checkout
-  RBAC_IMAGE           Docker image tag for RBAC services (default: insights-rbac-local:dev)
+  RBAC_IMAGE           Docker image tag for RBAC services (default depends on source)
+  RBAC_PR_NUMBER       PR number used by the pr source when RBAC_PR_URL is not set
+  RBAC_PR_URL           GitHub PR URL; fetched into a temporary worktree in pr mode
+  RBAC_CONFIG_PR_URL    GitHub rbac-config PR URL; uses its stage ConfigMap and schema.zed
+  RBAC_CONFIG_REPO      Local rbac-config checkout; builds its stage KSL schema and uses its stage ConfigMap
+  SCHEMA_ZED_FILE       Local generated stage schema.zed to copy into the Relations API
   COMPOSE_PULL_MODE    Passed to inventory-api start-full-kessel (default: missing)
   INVENTORY_DB_PORT    Host port for HBI Postgres (default: 15433)
   HBI_WEB_PORT         Host port for HBI API (default: 8080)
@@ -56,8 +78,10 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    pr|local) DEPLOYMENT_SOURCE="$1"; shift ;;
     --no-hbi) SKIP_HBI=true; shift ;;
     --no-build) SKIP_BUILD=true; shift ;;
+    --pull-dependencies) PULL_DEPENDENCIES=true; shift ;;
     -h | --help) usage; exit 0 ;;
     *)
       log-err "Unknown option: $1"
@@ -67,10 +91,140 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]]; then
+  if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/([0-9]+)(/.*)?$ ]]; then
+    RBAC_PR_NUMBER="${BASH_REMATCH[1]}"
+  else
+    log-err "RBAC_PR_URL must be a GitHub pull request URL: ${RBAC_PR_URL}"
+    exit 1
+  fi
+fi
+
+case "${DEPLOYMENT_SOURCE}" in
+  pr)
+    [[ -n "${RBAC_PR_NUMBER}" ]] || {
+      log-err "pr source requires RBAC_PR_URL or RBAC_PR_NUMBER."
+      exit 1
+    }
+    RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-pr-${RBAC_PR_NUMBER}:dev}"
+    ;;
+  local)
+    RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-local:dev}"
+    ;;
+  *)
+    log-err "Unknown deployment source '${DEPLOYMENT_SOURCE}'. Expected 'pr' or 'local'."
+    usage
+    exit 1
+    ;;
+esac
+
 require_cmd() {
   if ! command -v "$1" &>/dev/null; then
     log-err "Required command not found: $1"
     exit 1
+  fi
+}
+
+start_pr_worktree() {
+  [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]] || return 0
+  [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
+
+  local repository pr_number pr_worktree status
+  if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)(/.*)?$ ]]; then
+    repository="https://github.com/${BASH_REMATCH[1]}.git"
+    pr_number="${BASH_REMATCH[2]}"
+  else
+    log-err "RBAC_PR_URL must be a GitHub pull request URL: ${RBAC_PR_URL}"
+    exit 1
+  fi
+
+  pr_worktree="$(mktemp -d "${TMPDIR:-/tmp}/insights-rbac-pr-${pr_number}.XXXXXX")"
+  rmdir "${pr_worktree}"
+  log-info "Fetching PR #${pr_number} from ${repository}..."
+  git -C "${REPO_ROOT}" fetch --no-tags "${repository}" "pull/${pr_number}/head"
+  git -C "${REPO_ROOT}" worktree add --detach "${pr_worktree}" FETCH_HEAD >/dev/null
+
+  cp "${SCRIPT_DIR}/up-full.sh" "${pr_worktree}/scripts/local_stack/up-full.sh"
+  cp "${SCRIPT_DIR}/full-kessel.rbac-override.yml" \
+    "${pr_worktree}/scripts/local_stack/full-kessel.rbac-override.yml"
+  cp "${SCRIPT_DIR}/prepare-full-kessel-configs.sh" \
+    "${pr_worktree}/scripts/local_stack/prepare-full-kessel-configs.sh"
+  chmod +x "${pr_worktree}/scripts/local_stack/up-full.sh"
+
+  log-info "Using PR #${pr_number} checkout at ${pr_worktree}"
+  local child_args=(pr)
+  [[ "${SKIP_HBI}" == true ]] && child_args+=(--no-hbi)
+  [[ "${SKIP_BUILD}" == true ]] && child_args+=(--no-build)
+  [[ "${PULL_DEPENDENCIES}" == true ]] && child_args+=(--pull-dependencies)
+
+  if RBAC_PR_WORKTREE=true RBAC_PR_URL= RBAC_PR_NUMBER="${pr_number}" \
+    RBAC_IMAGE="${RBAC_IMAGE}" \
+    "${pr_worktree}/scripts/local_stack/up-full.sh" "${child_args[@]}"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  git -C "${REPO_ROOT}" worktree remove --force "${pr_worktree}" >/dev/null 2>&1 || true
+  exit "${status}"
+}
+
+select_rbac_config_pr() {
+  [[ -n "${RBAC_CONFIG_PR_URL}" ]] || return 0
+
+  local repository pr_number raw_base
+  if [[ "${RBAC_CONFIG_PR_URL}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)(/.*)?$ ]]; then
+    repository="${BASH_REMATCH[1]}"
+    pr_number="${BASH_REMATCH[2]}"
+  else
+    log-err "RBAC_CONFIG_PR_URL must be a GitHub pull request URL: ${RBAC_CONFIG_PR_URL}"
+    exit 1
+  fi
+
+  raw_base="https://raw.githubusercontent.com/${repository}/refs/pull/${pr_number}/head"
+  export RBAC_CONFIG_URL="${raw_base}/_private/configmaps/stage/rbac-config.yml"
+
+  # A local generated schema is more specific than the schema committed by the PR.
+  # This is useful while iterating on KSL before schema.zed has been updated.
+  if [[ -z "${SCHEMA_ZED_FILE:-}" ]]; then
+    export SCHEMA_ZED_URL="${raw_base}/configs/stage/schemas/schema.zed"
+    log-info "Using rbac-config PR #${pr_number} stage ConfigMap and committed schema.zed"
+  else
+    log-info "Using rbac-config PR #${pr_number} stage ConfigMap and local generated schema"
+  fi
+}
+
+select_local_rbac_config() {
+  [[ -n "${RBAC_CONFIG_REPO}" ]] || return 0
+  if [[ -n "${RBAC_CONFIG_PR_URL}" ]]; then
+    log-err 'Use either RBAC_CONFIG_REPO or RBAC_CONFIG_PR_URL, not both.'
+    exit 1
+  fi
+
+  local config_repo config_file schema_file
+  config_repo="$(cd "${RBAC_CONFIG_REPO}" 2>/dev/null && pwd)" || {
+    log-err "RBAC_CONFIG_REPO is not a directory: ${RBAC_CONFIG_REPO}"
+    exit 1
+  }
+  config_file="${config_repo}/_private/configmaps/stage/rbac-config.yml"
+  [[ -f "${config_file}" ]] || {
+    log-err "Stage ConfigMap not found: ${config_file}"
+    exit 1
+  }
+
+  export RBAC_CONFIG_FILE="${config_file}"
+  if [[ -z "${SCHEMA_ZED_FILE:-}" ]]; then
+    schema_file="${config_repo}/_private/test-schema/stage-schema.zed"
+    log-info "Building local rbac-config stage schema..."
+    make -C "${config_repo}" ksl-test-schema-stage
+    [[ -f "${schema_file}" ]] || {
+      log-err "Generated stage schema not found: ${schema_file}"
+      exit 1
+    }
+    export SCHEMA_ZED_FILE="${schema_file}"
+    log-info "Using local rbac-config checkout at ${config_repo} and its generated stage schema"
+  else
+    log-info "Using local rbac-config ConfigMap and explicit local schema"
   fi
 }
 
@@ -104,15 +258,32 @@ resolve_hbi_repo() {
     HBI_REPO="${clone_dir}"
   fi
   log-info "Using Host Inventory at ${HBI_REPO}"
+}
+
+initialize_hbi_submodules() {
   log-info "Initializing Host Inventory git submodules..."
   git -C "${HBI_REPO}" submodule update --init --recursive
+}
+
+pull_repository() {
+  local name="$1"
+  local repository="$2"
+
+  [[ "${PULL_DEPENDENCIES}" == true ]] || return 0
+  log-info "Fast-forwarding ${name} at ${repository}..."
+  git -C "${repository}" pull --ff-only
 }
 
 start_kessel_stack() {
   export RBAC_IMAGE
   export COMPOSE_PULL_MODE
+  export RBAC_CONFIG_REFRESH
   export DOCKER="${CONTAINER_RUNTIME}"
-  log-info "Starting Kessel + Debezium + RBAC (RBAC_IMAGE=${RBAC_IMAGE})..."
+  if [[ "${RBAC_CONFIG_REFRESH}" == true ]]; then
+    log-info 'Refreshing RBAC Config in the running local stack...'
+  else
+    log-info "Starting Kessel + Debezium + RBAC (RBAC_IMAGE=${RBAC_IMAGE})..."
+  fi
   "${SCRIPT_DIR}/start-kessel-compose.sh" \
     "${INVENTORY_API_REPO}" \
     "${REPO_ROOT}/scripts/local_stack/full-kessel.rbac-override.yml"
@@ -148,10 +319,10 @@ Stack endpoints:
   HBI Postgres:      localhost:${INVENTORY_DB_PORT:-15433}
 
 Verify workspace create + RYW (after stack is healthy):
-  ./scripts/create_workspace_local.sh --no-start
+  ./scripts/validations/api/create-workspace-local.sh --no-start
 
-Verify SpiceDB tuples:
-  ./scripts/zed_local.sh check
+Verify a workspace permission (replace <workspace-uuid>):
+  ./scripts/zed_local.sh check rbac/workspace:<workspace-uuid> view rbac/principal:redhat/1111111
 
 EOF
 }
@@ -159,9 +330,30 @@ EOF
 require_cmd curl
 require_cmd git
 
+start_pr_worktree
+select_rbac_config_pr
+select_local_rbac_config
+
 detect_container_runtime
 
+# A config PR only changes mounted role definitions and the Relations API
+# schema. Reuse an already-running local stack instead of rebuilding RBAC or
+# HBI and recreating every Compose service. A first launch still follows the
+# normal full-start path because it needs the local RBAC image and dependencies.
+if [[ "${DEPLOYMENT_SOURCE}" == local && ( -n "${RBAC_CONFIG_PR_URL}" || -n "${SCHEMA_ZED_FILE:-}" ) ]]; then
+  if "${CONTAINER_RUNTIME}" image inspect "${RBAC_IMAGE}" >/dev/null 2>&1 \
+    && [[ "$("${CONTAINER_RUNTIME}" container inspect --format '{{.State.Running}}' full-kessel-rbac-server-1 2>/dev/null)" == true ]]; then
+    RBAC_CONFIG_REFRESH=true
+    SKIP_BUILD=true
+    SKIP_HBI=true
+    log-info 'Existing local stack found; RBAC Config update will not rebuild images or HBI.'
+  else
+    log-info 'No running local stack found; performing the initial full build and startup.'
+  fi
+fi
+
 resolve_inventory_api_repo
+pull_repository "inventory-api" "${INVENTORY_API_REPO}"
 
 if [[ "${SKIP_BUILD}" != true ]]; then
   log-info "Building local RBAC image ${RBAC_IMAGE}..."
@@ -176,6 +368,8 @@ start_kessel_stack
 
 if [[ "${SKIP_HBI}" != true ]]; then
   resolve_hbi_repo
+  pull_repository "insights-host-inventory" "${HBI_REPO}"
+  initialize_hbi_submodules
   start_hbi
 else
   log-info "Skipping Host Inventory (--no-hbi)"
