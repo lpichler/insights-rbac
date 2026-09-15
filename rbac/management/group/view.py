@@ -932,6 +932,10 @@ class GroupViewSet(
                 tenant = self.request.tenant
                 bootstrap_service = get_tenant_bootstrap_service(OutboxReplicator())
                 users = [external_principal_to_user(bop_item) for bop_item in principals_from_response]
+
+                if not all(u.is_active for u in users):
+                    raise AssertionError(f"Received inactive users despite not requesting them: {users}")
+
                 backfill_remote_principals(bootstrap_service, users, tenant)
 
             new_users = []
