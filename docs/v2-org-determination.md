@@ -45,9 +45,13 @@ def is_v2_edit_api_enabled(self, org_id: str) -> bool:
 
 def is_v2_strict_access_check_enabled(self, org_id: str) -> bool:
     """Check whether strict V2 access checks are required in the given org."""
+    # Note: uses the same fallback_function as is_v2_edit_api_enabled to maintain
+    # the invariant that hbi.rbac-v2 is set for a superset of platform.rbac.workspaces,
+    # even when Unleash is unavailable.
     return self.is_enabled(
         feature_name=self.TOGGLE_V2_ADDITIONAL_MANDATORY_ACCESS_CHECK_REQUIRED,  # "hbi.rbac-v2"
         context={"orgId": str(org_id)},
+        fallback_function=lambda ignored_toggle_name, ignored_context: settings.V2_EDIT_API_ENABLED,
     )
 ```
 
@@ -157,7 +161,7 @@ If Unleash flag is disabled but `v2_write_activated_at` is set:
 
 - `V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES` — List of apps requiring strict V2 access checks
 - `V2_MIGRATION_APP_EXCLUDE_LIST` — Applications allowed for V2-enabled orgs to query via `/access`
-- `V2_EDIT_API_ENABLED` — Environment variable fallback for `platform.rbac.workspaces` flag
+- `V2_EDIT_API_ENABLED` — Environment variable fallback for both `platform.rbac.workspaces` and `hbi.rbac-v2` flags (shared fallback preserves the superset invariant even when Unleash is unavailable)
 
 ### Unleash Flags
 
@@ -176,16 +180,38 @@ If Unleash flag is disabled but `v2_write_activated_at` is set:
 
 ## Debugging
 
-To check if an org is v2-enabled:
+To check if an org is v2-enabled, use the same helper the `/access` endpoint uses.
+This accounts for **both** layers — the general `platform.rbac.workspaces` flag (Layer 2)
+**and** the strict `hbi.rbac-v2` flag (Layer 1) for applications like HBI:
 
 ```python
 from management.tenant_mapping.v2_activation import is_v2_write_activated
+from management.permissions.v2_edit_api_access import is_v2_access_check_required_for_request
 from feature_flags import FEATURE_FLAGS
 
+# Layer 2 (general V2 write flag — all non-strict apps)
 is_db_activated = is_v2_write_activated(tenant)
-is_flag_enabled = FEATURE_FLAGS.is_v2_edit_api_enabled(org_id)
-is_v2 = is_db_activated or is_flag_enabled
+is_general_flag = FEATURE_FLAGS.is_v2_edit_api_enabled(org_id)
+is_v2_general = is_db_activated or is_general_flag
+
+# Layer 1 (strict access check — e.g. HBI)
+is_strict_flag = FEATURE_FLAGS.is_v2_strict_access_check_enabled(org_id)
+is_v2_strict = is_db_activated or is_strict_flag
+
+# Full check matching the /access endpoint (pass the requested apps):
+# is_v2_for_request = is_v2_access_check_required_for_request(request, requested_apps)
+
+print(f"DB activated: {is_db_activated}")
+print(f"General flag (platform.rbac.workspaces): {is_general_flag}")
+print(f"Strict flag  (hbi.rbac-v2):              {is_strict_flag}")
+print(f"V2 for general apps: {is_v2_general}")
+print(f"V2 for strict apps (e.g. HBI): {is_v2_strict}")
 ```
+
+> **Note:** Checking only `is_v2_edit_api_enabled` will give a wrong answer for strict-access
+> apps like HBI. If `hbi.rbac-v2` is enabled but `platform.rbac.workspaces` is not, the
+> `/access` endpoint still returns V2 results for HBI — but the general check alone would
+> report `False`. Always use `is_v2_access_check_required_for_request` or check both flags.
 
 To check metrics:
 
