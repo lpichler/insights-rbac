@@ -133,12 +133,18 @@ And a structured log is written with full context: `org_id`, `application`, `cal
 
 ### V1 Org → V2 Org (One-way door)
 
-1. **Opt-in phase:** `platform.rbac.workspaces` flag enabled in Unleash
-   - `/access` endpoint enforces V2 restrictions (cannot query non-excluded apps)
-   - V2 write APIs are available
-   - V1 write APIs are blocked (via `V1WriteBlockedWhenWorkspacesEnabled` permission)
+1. **General opt-in:** `platform.rbac.workspaces` flag enabled in Unleash
+   - `/access` endpoint enforces V2 restrictions for **all** applications (cannot query non-excluded apps)
+   - V2 write APIs are available (gated by `V2WriteRequiresWorkspacesEnabled`)
+   - V1 write APIs are blocked (via `V1WriteBlockedWhenWorkspacesEnabled`)
 
-2. **Activation phase:** Org performs first V2 write
+2. **Strict-only opt-in:** Only `hbi.rbac-v2` flag enabled (without `platform.rbac.workspaces`)
+   - `/access` endpoint enforces V2 restrictions **only for strict-access apps** (e.g., HBI)
+   - V1 write APIs remain **allowed** — `V1WriteBlockedWhenWorkspacesEnabled` uses `is_v2_edit_enabled_for_request` (general flag), not the strict check
+   - V2 write APIs remain **blocked** — `V2WriteRequiresWorkspacesEnabled` also uses the general flag
+   - Non-strict apps are unaffected (see `test_not_required` in `tests/management/permissions/test_v2_edit_api_access.py`)
+
+3. **Activation phase:** Org performs first V2 write
    - `TenantMapping.v2_write_activated_at` is set (irreversible)
    - Even if Unleash flag is later disabled, the org remains v2
 
@@ -176,7 +182,7 @@ If Unleash flag is disabled but `v2_write_activated_at` is set:
 - **V2 write activation/locking:** `rbac/management/tenant_mapping/v2_activation.py`
 - **Feature flags:** `rbac/feature_flags.py`
 - **/access endpoint:** `rbac/management/access/view.py`
-- **Permission classes (enforcement):** Various `view.py` files use `V1WriteBlockedWhenWorkspacesEnabled`, `V1ApiBlockedWhenWorkspacesEnabled`, `V2WriteRequiresWorkspacesEnabled`
+- **Permission classes (write/API blocking):** Various `view.py` files use `V1WriteBlockedWhenWorkspacesEnabled`, `V1ApiBlockedWhenWorkspacesEnabled`, `V2WriteRequiresWorkspacesEnabled` — these all use `is_v2_edit_enabled_for_request` (general flag check), **not** the app-aware `is_v2_access_check_required_for_request` used by the `/access` endpoint
 
 ## Debugging
 
@@ -210,7 +216,7 @@ print(f"V2 for strict apps (e.g. HBI): {is_v2_strict}")
 
 > **Note:** Checking only `is_v2_edit_api_enabled` will give a wrong answer for strict-access
 > apps like HBI. If `hbi.rbac-v2` is enabled but `platform.rbac.workspaces` is not, the
-> `/access` endpoint still returns V2 results for HBI — but the general check alone would
+> `/access` endpoint still applies V2 access restrictions for HBI — but the general check alone would
 > report `False`. Always use `is_v2_access_check_required_for_request` or check both flags.
 
 To check metrics:
