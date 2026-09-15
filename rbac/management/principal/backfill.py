@@ -62,6 +62,12 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
         pass  # New principal — needs sync.
 
     effective_user = user
+
+    # TODO: remove this
+    #
+    # Although org_id appears to always be included in Users produced from real PrincipalProxy responses, some tests do
+    # not include it, so this is a hack to avoid having to update every test that ends up touching this code. Really, we
+    # should just make org_id mandatory, but that's a bigger change.
     if not user.org_id:
         effective_user = copy.copy(user)
         effective_user.org_id = tenant.org_id
