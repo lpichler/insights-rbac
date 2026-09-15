@@ -25,7 +25,7 @@
     "/permissions/": {
       "get": {
         "operationId": "Permissions_list",
-        "summary": "By default, responses are sorted in ascending order by the full permission string, matching v1 behavior.",
+        "summary": "List the permissions for a tenant",
         "description": "List the permissions for a tenant",
         "parameters": [
           {

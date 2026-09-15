@@ -1863,7 +1863,7 @@ namespace Permissions {
     }
 
     @doc("List the permissions for a tenant")
-    @summary("By default, responses are sorted in ascending order by the full permission string, matching v1 behavior.")
+    @summary("List the permissions for a tenant")
     @opExample(#{
         parameters: #{
             limit: 10,
