@@ -40,11 +40,34 @@ scalar UUID extends string;
 @example(#{
     application: "rbac",
     resource_type: "workspace",
-    operation: "read"
+    operation: "read",
+    permission: "rbac:workspace:read",
+    description: "Read access to workspaces",
+    requires: #[]
 })
 model Permission {
+    application?: string;
+    resource_type?: string;
+    @doc("The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API.")
+    operation?: string;
+    @doc("The full permission string, e.g. 'rbac:workspace:read'.")
+    permission?: string;
+    @doc("A description of what this permission grants access to.")
+    description?: string;
+    @doc("List of other permission strings that are required alongside this one.")
+    requires?: string[];
+}
+
+@example(#{
+    application: "rbac",
+    resource_type: "workspace",
+    operation: "read"
+})
+@doc("Permission data for role create and update operations. Unlike `Permission`, all fields are required.")
+model PermissionWrite {
     application: string;
     resource_type: string;
+    @doc("The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API.")
     operation: string;
 }
 
@@ -1442,7 +1465,7 @@ namespace Roles {
         @doc("A description of the role to help clarify its purpose. Does not need to be unique.")
         description?: string;
         @doc("List of permissions to assign to this role")
-        permissions: Permission[];
+        permissions: PermissionWrite[];
     }
 
     model RoleResponse<StatusCode extends int32> {
@@ -1794,4 +1817,150 @@ namespace Principals {
     @get op read(
         @path uuid: UUID;
     ): ItemResponse<Principal, 200> | Problems.CommonProblems | Problems.Problem404;
+}
+
+@route("/permissions/")
+@tag("Permissions")
+@doc("Operations about permissions")
+namespace Permissions {
+
+    model Pagination {
+        @doc("Pagination metadata")
+        meta: OffsetPaginationMeta;
+
+        @doc("Pagination links")
+        links: OffsetPaginationLinks;
+    }
+
+    @example(#{
+        meta: #{
+            count: 100,
+            limit: 10,
+            offset: 0
+        },
+        links: #{
+            first: "/api/rbac/v2/permissions/?limit=10&offset=0",
+            next: "/api/rbac/v2/permissions/?limit=10&offset=10",
+            previous: null,
+            last: "/api/rbac/v2/permissions/?limit=10&offset=90"
+        },
+        data: #[
+            #{
+                application: "rbac",
+                resource_type: "workspace",
+                operation: "read",
+                permission: "rbac:workspace:read",
+                description: "Read access to workspaces",
+                requires: #[]
+            }
+        ]
+    })
+    model PermissionListResponse {
+        ...Pagination;
+
+        @doc("List of permissions")
+        data: Permission[];
+    }
+
+    @doc("List the permissions for a tenant")
+    @summary("By default, responses are sorted in ascending order by the full permission string, matching v1 behavior.")
+    @opExample(#{
+        parameters: #{
+            limit: 10,
+            offset: 0
+        },
+        returnType: #{
+            meta: #{
+                count: 100,
+                limit: 10,
+                offset: 0
+            },
+            links: #{
+                first: "/api/rbac/v2/permissions/?limit=10&offset=0",
+                next: "/api/rbac/v2/permissions/?limit=10&offset=10",
+                previous: null,
+                last: "/api/rbac/v2/permissions/?limit=10&offset=90"
+            },
+            data: #[
+                #{
+                    application: "rbac",
+                    resource_type: "workspace",
+                    operation: "read",
+                    permission: "rbac:workspace:read",
+                    description: "Read access to workspaces",
+                    requires: #[]
+                }
+            ]
+        }
+    })
+    @get op list(
+        @query limit?: Limit = DefaultLimit;
+
+        @doc("Offset for offset-based pagination.")
+        @query offset?: Offset = DefaultOffset;
+
+        @doc("Filter by application name. Exact match by default. You may also use a comma-separated list to match on multiple applications.")
+        @query application?: string;
+
+        @doc("Filter permissions by the resource type (e.g. 'tenant', 'workspace'). When omitted, returns permissions from all types. You may also use a comma-separated list to match on multiple resource_types.")
+        @query resource_type?: string;
+
+        @doc("Filter by operation (e.g. 'read', 'create', 'delete', 'update'). You may also use a comma-separated list to match on multiple operation types. Equivalent to `verb` in the v1 API.")
+        @query operation?: string;
+
+        @doc("Filter by full permission string. Partial/contains match (e.g. 'workspace' matches 'rbac:workspace:read'), Only a single value is supported.")
+        @query permission?: string;
+
+        @doc("When true, exclude wildcard/global permissions (where application, resource_type, or operation is '*') from the results.")
+        @query exclude_globals?: boolean = false;
+
+        @doc("Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.")
+        @query exclude_roles?: string;
+
+        @doc("When true, only return permissions belonging to applications allowed for role creation.")
+        @query allowed_only?: boolean = false;
+
+        @doc("Control which fields are included in the response.")
+        @query fields?: FieldMask = "application,resource_type,operation,permission,description,requires";
+
+        @doc("Sort by specified field(s), prefix with '-' for descending order. Allowed fields: application, resource_type, operation, permission.")
+        @query order_by?: OrderBy = "permission";
+    ): PermissionListResponse | Problems.CommonProblems;
+
+    model PermissionOptionsResponse {
+        ...Pagination;
+
+        @doc("List of distinct values for the requested field")
+        data: string[];
+    }
+
+    @doc("List distinct values for a single permission field, used to populate filter options (e.g. Application, Resource type, Operation) in the UI.")
+    @route("/options/")
+    @get op options(
+        @query limit?: Limit = DefaultLimit;
+
+        @doc("Offset for offset-based pagination.")
+        @query offset?: Offset = DefaultOffset;
+
+        @doc("The field to return distinct values for. One of: application, resource_type, operation, permission.")
+        @query field: "application" | "resource_type" | "operation" | "permission";
+
+        @doc("Filter by application name. You may use a comma-separated list to filter on multiple applications.")
+        @query application?: string;
+
+        @doc("Filter by resource type. You may use a comma-separated list to filter on multiple resource types.")
+        @query resource_type?: string;
+
+        @doc("Filter by operation. You may use a comma-separated list to filter on multiple operations.")
+        @query operation?: string;
+
+        @doc("When true, exclude wildcard/global permission options.")
+        @query exclude_globals?: boolean = false;
+
+        @doc("Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.")
+        @query exclude_roles?: string;
+
+        @doc("When true, only return options for applications allowed for role creation.")
+        @query allowed_only?: boolean = false;
+    ): PermissionOptionsResponse | Problems.CommonProblems;
 }
