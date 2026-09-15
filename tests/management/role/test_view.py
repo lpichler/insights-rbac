@@ -18,47 +18,48 @@
 
 import json
 from typing import Optional
+from unittest.mock import ANY, Mock, call, patch
 from uuid import uuid4
+
 from django.conf import settings
 from django.core.serializers.json import DjangoJSONEncoder
 from django.test.utils import override_settings
-from django.urls import reverse, resolve
-from rest_framework import status
-from rest_framework.test import APIClient
-from api.models import Tenant
+from django.urls import resolve, reverse
 from management.cache import TenantCache
+from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.models import (
-    Group,
-    Permission,
-    Principal,
-    Role,
     Access,
-    Policy,
-    ResourceDefinition,
+    BindingMapping,
     ExtRoleRelation,
     ExtTenant,
+    Group,
+    Permission,
+    Policy,
+    Principal,
+    ResourceDefinition,
+    Role,
     Workspace,
-    BindingMapping,
 )
-from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.role.v2_model import CustomRoleV2
 from management.role_binding.model import RoleBinding
 from management.tenant_service.v2 import V2TenantBootstrapService
 from migration_tool.in_memory_tuples import (
-    all_of,
     InMemoryRelationReplicator,
     InMemoryTuples,
+    all_of,
     relation,
     resource,
-    subject,
     resource_type,
+    subject,
 )
-
+from rest_framework import status
+from rest_framework.test import APIClient
 from tests.core.test_kafka import copy_call_args
 from tests.identity_request import IdentityRequest
-from tests.util import assert_v1_v2_tuples_fully_consistent, assert_v1_v2_locally_consistent
+from tests.util import assert_v1_v2_locally_consistent, assert_v1_v2_tuples_fully_consistent
 from tests.v2_util import bootstrap_tenant_for_v2_test
-from unittest.mock import ANY, patch, call, Mock
+
+from api.models import Tenant
 
 URL = reverse("v1_management:role-list")
 
@@ -1009,7 +1010,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": False,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1108,7 +1109,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1181,7 +1182,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
@@ -1342,7 +1343,7 @@ class RoleViewsetTests(IdentityRequest):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": True,
                     "is_internal": False,
                     "user_id": 52567473,
