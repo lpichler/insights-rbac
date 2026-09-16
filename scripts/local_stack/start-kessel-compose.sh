@@ -13,7 +13,7 @@ source "${SCRIPT_DIR}/../common/container_runtime.sh"
 source "${SCRIPT_DIR}/prepare-full-kessel-configs.sh"
 
 INVENTORY_API_REPO="${1:?inventory-api repo path required}"
-RBAC_OVERRIDE="${2:?compose override file required}"
+RBAC_OVERRIDE_FILE="${2:?compose override file required}"
 
 detect_container_runtime
 
@@ -60,18 +60,19 @@ if [[ "${RBAC_CONFIG_REFRESH:-false}" == true ]]; then
   "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
     --profile relations --profile consumer --profile rbac \
     -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE}" \
+    -f "${RBAC_OVERRIDE_FILE}" \
     up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps relations-api
   "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
     --profile relations --profile consumer --profile rbac \
     -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE}" \
+    -f "${RBAC_OVERRIDE_FILE}" \
     up --pull "${COMPOSE_PULL_MODE}" --force-recreate --no-deps rbac-migrate
   "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
     --profile relations --profile consumer --profile rbac \
     -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE}" \
-    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps rbac-server
+    -f "${RBAC_OVERRIDE_FILE}" \
+    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps \
+    rbac-server rbac-worker rbac-scheduler rbac-kafka-consumer
   exit 0
 fi
 
@@ -83,5 +84,5 @@ fi
 "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
   --profile relations --profile consumer --profile rbac \
   -f "${COMPOSE_DIR}/docker-compose.yaml" \
-  -f "${RBAC_OVERRIDE}" \
+  -f "${RBAC_OVERRIDE_FILE}" \
   "${compose_up_args[@]}"

@@ -23,6 +23,7 @@
 #   ./scripts/local_stack/up-full.sh --no-hbi
 #   ./scripts/local_stack/up-full.sh --no-build
 #   ./scripts/local_stack/up-full.sh local --rebuild=rbac
+#   ./scripts/local_stack/up-full.sh local --rebuild=rbac,rbac-config
 #   RBAC_IMAGE=my-rbac:dev ./scripts/local_stack/up-full.sh
 set -euo pipefail
 
@@ -62,6 +63,8 @@ Usage: up-full.sh [pr|local] [options]
                 Fast-forward the resolved Inventory API and Host Inventory checkouts
   --rebuild=rbac
                 Rebuild and recreate only the local RBAC services
+  --rebuild=rbac,rbac-config
+                Rebuild RBAC and local rbac-config, refresh Kessel, and reseed RBAC
   -h, --help    Show this help
 
 Environment:
@@ -86,7 +89,7 @@ while [[ $# -gt 0 ]]; do
     --no-hbi) SKIP_HBI=true; shift ;;
     --no-build) SKIP_BUILD=true; shift ;;
     --pull-dependencies) PULL_DEPENDENCIES=true; shift ;;
-    --rebuild=rbac) REBUILD_SCOPE=rbac; shift ;;
+    --rebuild=rbac|--rebuild=rbac,rbac-config) REBUILD_SCOPE="${1#--rebuild=}"; shift ;;
     -h | --help) usage; exit 0 ;;
     *)
       log-err "Unknown option: $1"
@@ -98,10 +101,10 @@ done
 
 if [[ -n "${REBUILD_SCOPE}" ]]; then
   if [[ "${DEPLOYMENT_SOURCE}" != local ]]; then
-    log-err '--rebuild=rbac is supported only for the local deployment source.'
+    log-err '--rebuild is supported only for the local deployment source.'
     exit 1
   fi
-  exec "${SCRIPT_DIR}/rebuild-rbac.sh"
+  exec "${SCRIPT_DIR}/rebuild-rbac.sh" "--rebuild=${REBUILD_SCOPE}"
 fi
 
 if [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]]; then
