@@ -16,9 +16,400 @@
     },
     {
       "name": "Principals"
+    },
+    {
+      "name": "Permissions"
     }
   ],
   "paths": {
+    "/permissions/": {
+      "get": {
+        "operationId": "Permissions_list",
+        "summary": "List the permissions for a tenant",
+        "description": "List the permissions for a tenant",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset for offset-based pagination.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          },
+          {
+            "name": "application",
+            "in": "query",
+            "required": false,
+            "description": "Filter by application name. Exact match by default. You may also use a comma-separated list to match on multiple applications.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter permissions by the resource type (e.g. 'tenant', 'workspace'). When omitted, returns permissions from all types. You may also use a comma-separated list to match on multiple resource_types.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "description": "Filter by operation (e.g. 'read', 'create', 'delete', 'update'). You may also use a comma-separated list to match on multiple operation types. Equivalent to `verb` in the v1 API.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "permission",
+            "in": "query",
+            "required": false,
+            "description": "Filter by full permission string. Partial/contains match (e.g. 'workspace' matches 'rbac:workspace:read'), Only a single value is supported.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_globals",
+            "in": "query",
+            "required": false,
+            "description": "When true, exclude wildcard/global permissions (where application, resource_type, or operation is '*') from the results.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_roles",
+            "in": "query",
+            "required": false,
+            "description": "Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "allowed_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, only return permissions belonging to applications allowed for role creation.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "description": "Control which fields are included in the response.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/FieldMask"
+                }
+              ],
+              "default": "application,resource_type,operation,permission,description,requires"
+            },
+            "explode": false
+          },
+          {
+            "name": "order_by",
+            "in": "query",
+            "required": false,
+            "description": "Sort by specified field(s), prefix with '-' for descending order. Allowed fields: application, resource_type, operation, permission.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/OrderBy"
+                }
+              ],
+              "default": "permission"
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Permissions.PermissionListResponse"
+                },
+                "example": {
+                  "meta": {
+                    "count": 100,
+                    "limit": 10,
+                    "offset": 0
+                  },
+                  "links": {
+                    "first": "/api/rbac/v2/permissions/?limit=10&offset=0",
+                    "next": "/api/rbac/v2/permissions/?limit=10&offset=10",
+                    "previous": null,
+                    "last": "/api/rbac/v2/permissions/?limit=10&offset=90"
+                  },
+                  "data": [
+                    {
+                      "application": "rbac",
+                      "resource_type": "workspace",
+                      "operation": "read",
+                      "permission": "rbac:workspace:read",
+                      "description": "Read access to workspaces",
+                      "requires": []
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Permissions"
+        ]
+      }
+    },
+    "/permissions/options/": {
+      "get": {
+        "operationId": "Permissions_options",
+        "description": "List distinct values for a single permission field, used to populate filter options (e.g. Application, Resource type, Operation) in the UI.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Limit"
+                }
+              ],
+              "default": 10
+            },
+            "explode": false
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "description": "Offset for offset-based pagination.",
+            "schema": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/Offset"
+                }
+              ],
+              "default": 0
+            },
+            "explode": false
+          },
+          {
+            "name": "field",
+            "in": "query",
+            "required": true,
+            "description": "The field to return distinct values for. One of: application, resource_type, operation, permission.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "application",
+                "resource_type",
+                "operation",
+                "permission"
+              ]
+            },
+            "explode": false
+          },
+          {
+            "name": "application",
+            "in": "query",
+            "required": false,
+            "description": "Filter by application name. You may use a comma-separated list to filter on multiple applications.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "required": false,
+            "description": "Filter by resource type. You may use a comma-separated list to filter on multiple resource types.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "operation",
+            "in": "query",
+            "required": false,
+            "description": "Filter by operation. You may use a comma-separated list to filter on multiple operations.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_globals",
+            "in": "query",
+            "required": false,
+            "description": "When true, exclude wildcard/global permission options.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          },
+          {
+            "name": "exclude_roles",
+            "in": "query",
+            "required": false,
+            "description": "Exclude permissions already assigned to the given role(s). Comma-separated list of role UUIDs.",
+            "schema": {
+              "type": "string"
+            },
+            "explode": false
+          },
+          {
+            "name": "allowed_only",
+            "in": "query",
+            "required": false,
+            "description": "When true, only return options for applications allowed for role creation.",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            },
+            "explode": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request has succeeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Permissions.PermissionOptionsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server could not understand the request due to invalid syntax.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem400"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access is unauthorized.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem401"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Access is forbidden.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem403"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problems.Problem500"
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Permissions"
+        ]
+      }
+    },
     "/principals/": {
       "get": {
         "operationId": "Principals_list",
@@ -2946,6 +3337,44 @@
       },
       "Permission": {
         "type": "object",
+        "properties": {
+          "application": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string",
+            "description": "The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API."
+          },
+          "permission": {
+            "type": "string",
+            "description": "The full permission string, e.g. 'rbac:workspace:read'."
+          },
+          "description": {
+            "type": "string",
+            "description": "A description of what this permission grants access to."
+          },
+          "requires": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of other permission strings that are required alongside this one."
+          }
+        },
+        "example": {
+          "application": "rbac",
+          "resource_type": "workspace",
+          "operation": "read",
+          "permission": "rbac:workspace:read",
+          "description": "Read access to workspaces",
+          "requires": []
+        }
+      },
+      "PermissionWrite": {
+        "type": "object",
         "required": [
           "application",
           "resource_type",
@@ -2959,13 +3388,129 @@
             "type": "string"
           },
           "operation": {
-            "type": "string"
+            "type": "string",
+            "description": "The action allowed by this permission (e.g. 'read', 'create', 'delete', 'update'). Equivalent to `verb` in the v1 API."
           }
         },
+        "description": "Permission data for role create and update operations. Unlike `Permission`, all fields are required.",
         "example": {
           "application": "rbac",
           "resource_type": "workspace",
           "operation": "read"
+        }
+      },
+      "Permissions.Pagination": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          }
+        }
+      },
+      "Permissions.PermissionListResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Permission"
+            },
+            "description": "List of permissions"
+          }
+        },
+        "example": {
+          "meta": {
+            "count": 100,
+            "limit": 10,
+            "offset": 0
+          },
+          "links": {
+            "first": "/api/rbac/v2/permissions/?limit=10&offset=0",
+            "next": "/api/rbac/v2/permissions/?limit=10&offset=10",
+            "previous": null,
+            "last": "/api/rbac/v2/permissions/?limit=10&offset=90"
+          },
+          "data": [
+            {
+              "application": "rbac",
+              "resource_type": "workspace",
+              "operation": "read",
+              "permission": "rbac:workspace:read",
+              "description": "Read access to workspaces",
+              "requires": []
+            }
+          ]
+        }
+      },
+      "Permissions.PermissionOptionsResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "links",
+          "data"
+        ],
+        "properties": {
+          "meta": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationMeta"
+              }
+            ],
+            "description": "Pagination metadata"
+          },
+          "links": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/OffsetPaginationLinks"
+              }
+            ],
+            "description": "Pagination links"
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of distinct values for the requested field"
+          }
         }
       },
       "Principal": {
@@ -4051,7 +4596,7 @@
           "permissions": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/Permission"
+              "$ref": "#/components/schemas/PermissionWrite"
             },
             "description": "List of permissions to assign to this role"
           }
