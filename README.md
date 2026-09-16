@@ -96,6 +96,27 @@ Build and deploy the current RBAC checkout, including uncommitted changes:
 make docker-local-full-up local
 ```
 
+##### Rebuild running RBAC services
+
+When the full stack is already running, rebuild only the RBAC services without
+tearing down the entire stack:
+
+```bash
+make docker-local-full-up local rebuild=rbac
+```
+
+This rebuilds the local RBAC Docker image, runs migrations, and recreates the
+RBAC server, worker, scheduler, and Kafka consumer. Other services remain
+untouched.
+
+To also rebuild a local `rbac-config` checkout (compile KSL schema, refresh
+SpiceDB and Relations API, reseed role definitions):
+
+```bash
+make docker-local-full-up local rebuild=rbac,rbac-config \
+  rbac_config_repo="$(cd ../rbac-config && pwd)"
+```
+
 ##### An RBAC pull request
 
 To test a pull request without checking out its branch, pass its complete
