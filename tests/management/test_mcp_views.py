@@ -27,6 +27,7 @@ from unittest.mock import MagicMock, patch
 from django.test import override_settings
 from django.urls import clear_url_caches, reverse
 from django.utils import timezone
+from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.mcp_views import (
     ApiVersion,
     ToolConfig,
@@ -48,20 +49,19 @@ from management.mcp_views import (
     mcp_shutdown,
 )
 from management.models import Access, AuditLog, Group, Permission, Policy, Principal, Role
-from management.tenant_mapping.v2_activation import ensure_v2_write_activated
-from management.workspace.model import Workspace
-from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.role.v2_model import RoleV2
 from management.role_binding.model import RoleBinding, RoleBindingGroup, RoleBindingPrincipal
 from management.tenant_mapping.model import TenantMapping
+from management.tenant_mapping.v2_activation import ensure_v2_write_activated
 from management.tenant_service.v2 import V2TenantBootstrapService
+from management.workspace.model import Workspace
 from rest_framework import status
 from rest_framework.test import APIClient
 from tests.identity_request import IdentityRequest
+from tests.v2_util import bootstrap_tenant_for_v2_test
 
 from api.models import CrossAccountRequest, Tenant
 from rbac import urls
-from tests.v2_util import bootstrap_tenant_for_v2_test
 
 
 class MCPToolTestMixin:
@@ -8036,6 +8036,7 @@ class MCPWriteConfirmationTests(MCPToolTestMixin, IdentityRequest):
 
         token = self._get_confirmation_token("create_group", {"name": "Cross Org Test"})
 
+        other_user = self._create_user_data()
         other_customer = self._create_customer_data()
         other_tenant = Tenant.objects.create(
             tenant_name=other_customer["tenant_name"],
@@ -8044,7 +8045,7 @@ class MCPWriteConfirmationTests(MCPToolTestMixin, IdentityRequest):
             ready=True,
         )
         other_identity = self._build_identity(
-            self.user_data, other_customer["account_id"], other_customer["org_id"], True, False
+            other_user, other_customer["account_id"], other_customer["org_id"], True, False
         )
         other_header = b64encode(json_dumps(other_identity).encode("utf-8"))
         other_headers = {"HTTP_X_RH_IDENTITY": other_header}

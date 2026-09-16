@@ -27,30 +27,23 @@ from django.db import transaction
 from django.test.utils import override_settings
 from django.urls import reverse
 from django.utils import timezone
-from rest_framework import status
-from rest_framework.response import Response
-from rest_framework.test import APIClient
-
-from api.cross_access.model import CrossAccountRequest
-from api.cross_access.util import check_cross_request_expiry
-from api.models import Tenant, User
 from management.cache import TenantCache
 from management.group.definer import add_roles
 from management.group.serializer import GroupInputSerializer
+from management.inventory_replicator.inventory_replicator import ReplicationEventType
+from management.inventory_replicator.noop_replicator import NoopReplicator
 from management.models import (
     Access,
     BindingMapping,
-    Group,
-    Permission,
-    Principal,
-    Policy,
-    Role,
     ExtRoleRelation,
     ExtTenant,
+    Group,
+    Permission,
+    Policy,
+    Principal,
+    Role,
     Workspace,
 )
-from management.inventory_replicator.noop_replicator import NoopReplicator
-from management.inventory_replicator.inventory_replicator import ReplicationEventType
 from management.role.inventory_api_dual_write_handler import InventoryApiDualWriteHandler
 from management.role.v2_model import CustomRoleV2
 from management.tenant_mapping.model import TenantMapping
@@ -63,12 +56,19 @@ from migration_tool.in_memory_tuples import (
     resource,
     subject,
 )
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.test import APIClient
 from tests.core.test_kafka import copy_call_args
 from tests.identity_request import IdentityRequest
 from tests.management.role.test_dual_write import RbacFixture
 from tests.management.role.test_view import find_in_list, relation_api_tuple
 from tests.util import assert_v1_v2_tuples_fully_consistent
 from tests.v2_util import seed_v2_role_from_v1
+
+from api.cross_access.model import CrossAccountRequest
+from api.cross_access.util import check_cross_request_expiry
+from api.models import Tenant, User
 
 
 def generate_group_member_relation_entry(group_uuid, principal_user_id):
@@ -4182,7 +4182,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             "status_code": 200,
             "data": [
                 {
-                    "org_id": "100001",
+                    "org_id": self.customer_data["org_id"],
                     "is_org_admin": False,
                     "is_internal": False,
                     "id": 52567473,
@@ -4455,6 +4455,166 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             response.json().get("errors")[0].get("detail"),
             "REMOVE PRINCIPALS cannot be performed on system groups.",
         )
+
+
+@override_settings(REPLICATION_TO_RELATION_ENABLED=False)
+class GroupPrincipalV2SyncTests(IdentityRequest):
+    """Test that adding principals to a group syncs TenantMapping membership via update_user."""
+
+    def setUp(self):
+        """Set up the V2 sync tests."""
+        super().setUp()
+        request = self.request_context["request"]
+        user = User()
+        user.username = self.user_data["username"]
+        user.account = self.customer_data["account_id"]
+        user.org_id = self.customer_data["org_id"]
+        user.admin = True
+        request.user = user
+
+        self.principal = Principal(username=self.user_data["username"], tenant=self.tenant, user_id="1")
+        self.principal.save()
+
+        self.group = Group(name="testGroup", tenant=self.tenant)
+        self.group.save()
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "new_user",
+                    "user_id": "99001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_new_principal_calls_update_user(self, mock_proxy):
+        """Test that adding a new principal creates the principal and adds it to the group."""
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "new_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="new_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99001")
+        self.assertEqual(principal.tenant, self.tenant)
+        self.assertIn(principal, self.group.principals.all())
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "lazy_user",
+                    "user_id": "99002",
+                    "is_org_admin": False,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_lazy_principal_calls_update_user(self, mock_proxy):
+        """Test that adding a lazy principal (user_id=None) populates user_id and adds to group."""
+        # Create a lazy principal without user_id
+        Principal.objects.create(username="lazy_user", tenant=self.tenant, user_id=None)
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "lazy_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="lazy_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "99002")
+        self.assertIn(principal, self.group.principals.all())
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "existing_user",
+                    "user_id": "88001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_existing_principal_skips_update_user(self, mock_proxy):
+        """Test that adding an existing principal with user_id already set skips update_user."""
+        # Create a principal that already has user_id
+        Principal.objects.create(username="existing_user", tenant=self.tenant, user_id="88001")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        request_body = {"principals": [{"username": "existing_user"}]}
+        response = client.post(url, request_body, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        principal = Principal.objects.get(username__iexact="existing_user", tenant=self.tenant)
+        self.assertEqual(principal.user_id, "88001")
+        self.assertIn(principal, self.group.principals.all())
+
+    @override_settings(V2_BOOTSTRAP_TENANT=True, PRINCIPAL_USER_DOMAIN="redhat")
+    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator.replicate")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "tuple_user",
+                    "user_id": "77001",
+                    "is_org_admin": True,
+                    "is_active": True,
+                }
+            ],
+        },
+    )
+    def test_add_new_principal_creates_tuples(self, mock_proxy, mock_replicate):
+        """Test that adding a new principal creates TenantMapping group membership tuples."""
+        from management.group.definer import seed_group
+
+        Tenant.objects.get_or_create(tenant_name="public")
+        seed_group()
+
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        mock_replicate.side_effect = replicator.replicate
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        response = client.post(url, {"principals": [{"username": "tuple_user"}]}, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Verify TenantMapping was created and tuples were written
+        mapping = TenantMapping.objects.get(tenant=self.tenant)
+        default_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
+            )
+        )
+        self.assertEqual(default_group_tuple_count, 1, "Expected default group membership tuple")
+
+        admin_group_tuple_count = tuples.count_tuples(
+            all_of(
+                resource("rbac", "group", str(mapping.default_admin_group_uuid)),
+                relation("member"),
+                subject("rbac", "principal", "redhat/77001"),
+            )
+        )
+        self.assertEqual(admin_group_tuple_count, 1, "Expected admin group membership tuple")
 
 
 class GroupViewNonAdminTests(IdentityRequest):
