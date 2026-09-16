@@ -7,16 +7,16 @@ from django.conf import settings
 from django.db.models import Prefetch, Q, QuerySet
 from management.group.model import Group
 from management.group.platform import DefaultGroupNotAvailableError, GlobalPolicyIdService
-from management.inventory_replicator.inventory_replicator import (
-    InventoryReplicator,
+from management.permission.scope_service import TenantScopeResources
+from management.principal.model import Principal
+from management.relation_replicator.relation_replicator import (
     PartitionKey,
+    RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEventStream,
 )
-from management.inventory_replicator.types import RelationTuple
-from management.permission.scope_service import TenantScopeResources
-from management.principal.model import Principal
+from management.relation_replicator.types import RelationTuple
 from management.tenant_mapping.exceptions import TenantNotBootstrappedError
 from management.tenant_mapping.model import DefaultAccessType, TenantMapping, logger
 from management.tenant_service.relations import default_role_binding_tuples
@@ -164,17 +164,17 @@ class _BootstrapReplicationEntry:
 class V2TenantBootstrapService:
     """Service for bootstrapping tenants with built-in relationships."""
 
-    _replicator: InventoryReplicator
+    _replicator: RelationReplicator
     _public_tenant: Optional[Tenant]
     _policy_service: GlobalPolicyIdService
 
     def __init__(
         self,
-        replicator: InventoryReplicator,
+        replicator: RelationReplicator,
         public_tenant: Optional[Tenant] = None,
         get_user_id: Optional[Callable[[User], str]] = None,
     ):
-        """Initialize the TenantBootstrapService with a InventoryReplicator."""
+        """Initialize the TenantBootstrapService with a RelationReplicator."""
         self._replicator = replicator
         self._public_tenant = public_tenant
         self._get_user_id = get_user_id if get_user_id else default_get_user_id
