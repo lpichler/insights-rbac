@@ -81,7 +81,8 @@ make docker-local-full-up local \
 
 This automatically runs `make ksl-test-schema-stage` in `rbac-config`, loads
 the generated schema into local SpiceDB, refreshes Relations API, runs
-`rbac-migrate`, and restarts the RBAC server.
+`rbac-migrate`, and restarts `rbac-server`, `rbac-worker`, `rbac-scheduler`,
+and `rbac-kafka-consumer`.
 
 When only `rbac-config` or its schema changes, rerun the same command. If RBAC
 source code also changed, perform a full rebuild first:

@@ -68,7 +68,7 @@ Please use `make <target>` where <target> is one of:
                             build and start an RBAC pull request in a temporary worktree
   docker-local-full-up local rbac_config_pr=<GitHub-PR-URL>
                             use the stage role definitions and schema from an RBAC Config PR
-                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC server
+                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC services
   docker-local-full-up local rbac_config_repo=<path>
                             build its stage KSL schema and use its local role definitions
   docker-local-full-up pr=<RBAC-PR-URL> rbac_config_pr=<Config-PR-URL>
