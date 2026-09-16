@@ -25,6 +25,37 @@ make docker-local-full-up local \
   rbac_config_repo=/absolute/path/to/rbac-config
 ```
 
+### Rebuild running RBAC services
+
+When the full stack is already running, you can rebuild and restart only the
+RBAC services without tearing down the entire stack. This is faster than a
+full `docker-local-full-down` / `docker-local-full-up` cycle after code changes.
+
+Rebuild only RBAC (server, worker, scheduler, Kafka consumer):
+
+```bash
+make docker-local-full-up local rebuild=rbac
+```
+
+This rebuilds the local RBAC Docker image from the current checkout, runs
+migrations, and recreates the four RBAC services. Other services (SpiceDB,
+Relations API, Kafka, HBI) are left untouched.
+
+Rebuild RBAC together with a local `rbac-config` checkout:
+
+```bash
+make docker-local-full-up local rebuild=rbac,rbac-config \
+  rbac_config_repo=/absolute/path/to/rbac-config
+```
+
+This additionally compiles the local stage KSL schema from `rbac-config`,
+writes it into SpiceDB, refreshes Relations API, reseeds RBAC role
+definitions, and recreates the RBAC services. Use this mode when both RBAC
+code and KSL schema changes need to be tested together.
+
+The rebuild modes require the `local` deployment source and a running stack.
+If the stack is not running, start it first with `make docker-local-full-up local`.
+
 ### Deployment source combinations
 
 The full-stack command can combine an RBAC checkout or pull request with an
@@ -38,6 +69,8 @@ RBAC Config checkout or pull request:
 | Current local RBAC | Current local `rbac-config` checkout | `make docker-local-full-up local rbac_config_repo=/absolute/path/to/rbac-config` |
 | RBAC GitHub PR | RBAC Config PR | `make docker-local-full-up pr=<rbac-pr-url> rbac_config_pr=<rbac-config-pr-url>` |
 | RBAC GitHub PR | Current local `rbac-config` checkout | `make docker-local-full-up pr=<rbac-pr-url> rbac_config_repo=/absolute/path/to/rbac-config` |
+| Rebuild running RBAC only | N/A | `make docker-local-full-up local rebuild=rbac` |
+| Rebuild running RBAC | Rebuild local `rbac-config` | `make docker-local-full-up local rebuild=rbac,rbac-config rbac_config_repo=/absolute/path/to/rbac-config` |
 
 For local changes in both repositories:
 
@@ -48,7 +81,8 @@ make docker-local-full-up local \
 
 This automatically runs `make ksl-test-schema-stage` in `rbac-config`, loads
 the generated schema into local SpiceDB, refreshes Relations API, runs
-`rbac-migrate`, and restarts the RBAC server.
+`rbac-migrate`, and restarts `rbac-server`, `rbac-worker`, `rbac-scheduler`,
+and `rbac-kafka-consumer`.
 
 When only `rbac-config` or its schema changes, rerun the same command. If RBAC
 source code also changed, perform a full rebuild first:

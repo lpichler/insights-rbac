@@ -22,6 +22,8 @@
 #   ./scripts/local_stack/up-full.sh
 #   ./scripts/local_stack/up-full.sh --no-hbi
 #   ./scripts/local_stack/up-full.sh --no-build
+#   ./scripts/local_stack/up-full.sh local --rebuild=rbac
+#   ./scripts/local_stack/up-full.sh local --rebuild=rbac,rbac-config
 #   RBAC_IMAGE=my-rbac:dev ./scripts/local_stack/up-full.sh
 set -euo pipefail
 
@@ -44,6 +46,7 @@ COMPOSE_PULL_MODE="${COMPOSE_PULL_MODE:-missing}"
 SKIP_HBI=false
 SKIP_BUILD=false
 PULL_DEPENDENCIES=false
+REBUILD_SCOPE=""
 HBI_COMPOSE_PROJECT="${HBI_COMPOSE_PROJECT:-hbi-kessel-local}"
 DEPLOYMENT_SOURCE="${RBAC_DEPLOYMENT_SOURCE:-local}"
 
@@ -58,6 +61,10 @@ Usage: up-full.sh [pr|local] [options]
   --no-build    Skip building the local RBAC image (use existing RBAC_IMAGE tag)
   --pull-dependencies
                 Fast-forward the resolved Inventory API and Host Inventory checkouts
+  --rebuild=rbac
+                Rebuild and recreate only the local RBAC services
+  --rebuild=rbac,rbac-config
+                Rebuild RBAC and local rbac-config, refresh Kessel, and reseed RBAC
   -h, --help    Show this help
 
 Environment:
@@ -82,6 +89,7 @@ while [[ $# -gt 0 ]]; do
     --no-hbi) SKIP_HBI=true; shift ;;
     --no-build) SKIP_BUILD=true; shift ;;
     --pull-dependencies) PULL_DEPENDENCIES=true; shift ;;
+    --rebuild=rbac|--rebuild=rbac,rbac-config) REBUILD_SCOPE="${1#--rebuild=}"; shift ;;
     -h | --help) usage; exit 0 ;;
     *)
       log-err "Unknown option: $1"
@@ -90,6 +98,14 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${REBUILD_SCOPE}" ]]; then
+  if [[ "${DEPLOYMENT_SOURCE}" != local ]]; then
+    log-err '--rebuild is supported only for the local deployment source.'
+    exit 1
+  fi
+  exec "${SCRIPT_DIR}/rebuild-rbac.sh" "--rebuild=${REBUILD_SCOPE}"
+fi
 
 if [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]]; then
   if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/([0-9]+)(/.*)?$ ]]; then

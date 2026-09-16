@@ -60,11 +60,15 @@ Please use `make <target>` where <target> is one of:
 --- Commands using the local full Kessel stack ---
   docker-local-full-up local
                             build and start the current local RBAC checkout
+  docker-local-full-up local rebuild=rbac
+                            rebuild and recreate only local RBAC services
+  docker-local-full-up local rebuild=rbac,rbac-config rbac_config_repo=<path>
+                            rebuild KSL schema, refresh Kessel, reseed and recreate RBAC
   docker-local-full-up pr=<GitHub-PR-URL>
                             build and start an RBAC pull request in a temporary worktree
   docker-local-full-up local rbac_config_pr=<GitHub-PR-URL>
                             use the stage role definitions and schema from an RBAC Config PR
-                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC server
+                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC services
   docker-local-full-up local rbac_config_repo=<path>
                             build its stage KSL schema and use its local role definitions
   docker-local-full-up pr=<RBAC-PR-URL> rbac_config_pr=<Config-PR-URL>
@@ -335,7 +339,7 @@ RBAC_CONFIG_REPO ?= $(rbac_config_repo)
 SCHEMA_ZED_FILE ?= $(schema_zed_file)
 
 docker-local-full-up:
-	RBAC_PR_URL="$(PR_URL)" RBAC_CONFIG_PR_URL="$(RBAC_CONFIG_PR_URL)" RBAC_CONFIG_REPO="$(RBAC_CONFIG_REPO)" SCHEMA_ZED_FILE="$(SCHEMA_ZED_FILE)" ./scripts/local_stack/up-full.sh $(if $(strip $(PR_URL)),pr,$(if $(filter pr,$(MAKECMDGOALS)),pr,local))
+	RBAC_PR_URL="$(PR_URL)" RBAC_CONFIG_PR_URL="$(RBAC_CONFIG_PR_URL)" RBAC_CONFIG_REPO="$(RBAC_CONFIG_REPO)" SCHEMA_ZED_FILE="$(SCHEMA_ZED_FILE)" ./scripts/local_stack/up-full.sh $(if $(strip $(PR_URL)),pr,$(if $(filter pr,$(MAKECMDGOALS)),pr,local)) $(if $(strip $(rebuild)),--rebuild=$(rebuild),)
 
 .PHONY: docker-local-full-up-latest
 docker-local-full-up-latest:
