@@ -10,7 +10,6 @@ from management.group.model import Group
 from management.principal.model import Principal
 from management.role_binding.model import RoleBinding, RoleBindingPrincipal
 from management.role.v2_model import CustomRoleV2
-from management.tenant_service import tenant_service
 from management.tenant_service.tenant_service import (
     _ensure_principal_with_user_id_in_tenant,
     merge_obsolete_principal_into_survivor,
@@ -184,8 +183,8 @@ class MergePrincipalTests(IdentityRequest):
         self.assertEqual(survivor.user_id, "54181241")
         self.assertEqual(list(group.principals.all()), [survivor])
 
-    def test_ensure_principal_skips_merge_when_principal_has_stale_user_id(self):
-        """A principal with a non-empty stale user_id is not merged even if an obsolete owner exists."""
+    def test_ensure_principal_raises_on_user_id_mismatch(self):
+        """A principal with a different non-empty user_id raises RuntimeError."""
         obsolete = Principal.objects.create(username="jaross@redhat.com", tenant=self.tenant, user_id="54181241")
         principal = Principal.objects.create(username="jdross@redhat.com", tenant=self.tenant, user_id="99999999")
         user = User()
@@ -194,11 +193,9 @@ class MergePrincipalTests(IdentityRequest):
         user.org_id = self.tenant.org_id
 
         tracker = _ReplicationTracker()
-        with patch.object(tenant_service.logger, "warning") as mock_warning:
-            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
-        self.assertIsNone(result)
+        with self.assertRaises(RuntimeError):
+            _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
 
-        mock_warning.assert_called_once()
         principal.refresh_from_db()
         self.assertEqual(principal.user_id, "99999999")
         self.assertTrue(Principal.objects.filter(pk=obsolete.pk).exists())

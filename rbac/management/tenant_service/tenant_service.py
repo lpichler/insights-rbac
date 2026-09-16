@@ -33,8 +33,16 @@ def _transfer_role_binding_entries(obsolete: Principal, survivor: Principal) -> 
     if not binding_ids:
         return
 
-    RoleBinding.objects.select_for_update().filter(pk__in=binding_ids)
-    entries = list(obsolete.role_binding_entries.select_related("binding").filter(binding_id__in=binding_ids))
+    # Lock the bindings and evaluate; only consider entries from locked bindings
+    # to avoid picking up new bindings committed by concurrent transactions.
+    locked_binding_ids = set(
+        RoleBinding.objects.select_for_update().filter(pk__in=binding_ids).values_list("pk", flat=True)
+    )
+    entries = list(
+        RoleBindingPrincipal.objects.select_related("binding").filter(
+            principal=obsolete, binding_id__in=locked_binding_ids
+        )
+    )
 
     for entry in entries:
         RoleBindingPrincipal.objects.get_or_create(
@@ -55,8 +63,7 @@ def _transfer_group_memberships(
     for group in obsolete_groups:
         if obsolete.user_id:
             tuples_to_remove.append(Group.relationship_to_user_id_for_group(str(group.uuid), obsolete.user_id))
-        if not group.principals.filter(pk=survivor.pk).exists():
-            group.principals.add(survivor)
+        group.principals.add(survivor)
         group.principals.remove(obsolete)
     return tuples_to_remove
 
@@ -168,20 +175,13 @@ def _resolve_user_id_conflict(
     merge_obsolete_principal_into_survivor(survivor, obsolete, user_id=user_id, replicator=replicator)
 
 
-class _NullReplicator(InventoryReplicator):
-    """No-op replicator for V1 tenants that don't use Kessel Relations."""
-
-    def replicate(self, event: ReplicationEvent):
-        pass
-
-
 def _ensure_principal_with_user_id_in_tenant(
     user: User,
     tenant: Tenant,
     upsert: bool = False,
-    replicator: Optional[InventoryReplicator] = None,
+    *,
+    replicator: InventoryReplicator,
 ):
-    effective_replicator = replicator if replicator is not None else _NullReplicator()
     created = False
     principal = None
 
@@ -197,7 +197,7 @@ def _ensure_principal_with_user_id_in_tenant(
             if not _has_user_id(user.user_id):
                 raise
             survivor, _ = Principal.objects.get_or_create(username=user.username, tenant=tenant)
-            _resolve_user_id_conflict(survivor, user.user_id, effective_replicator)
+            _resolve_user_id_conflict(survivor, user.user_id, replicator)
             return
     else:
         try:
@@ -219,28 +219,22 @@ def _ensure_principal_with_user_id_in_tenant(
         return
 
     if not _is_missing_user_id(principal.user_id):
-        logger.warning(
-            "Principal user_id does not match BOP user_id; refusing merge. "
-            "username=%s principal_user_id=%s bop_user_id=%s org_id=%s",
-            principal.username,
-            principal.user_id,
-            user.user_id,
-            tenant.org_id,
+        raise RuntimeError(
+            f"Principal user_id does not match BOP user_id. "
+            f"username={principal.username} principal_user_id={principal.user_id} "
+            f"bop_user_id={user.user_id} org_id={tenant.org_id}"
         )
-        return
 
     obsolete = Principal.objects.filter(user_id=user.user_id, tenant=tenant).exclude(pk=principal.pk).first()
     if obsolete is not None:
-        merge_obsolete_principal_into_survivor(
-            principal, obsolete, user_id=user.user_id, replicator=effective_replicator
-        )
+        merge_obsolete_principal_into_survivor(principal, obsolete, user_id=user.user_id, replicator=replicator)
         return
 
     principal.user_id = user.user_id
     try:
         principal.save()
     except IntegrityError:
-        _resolve_user_id_conflict(principal, user.user_id, effective_replicator)
+        _resolve_user_id_conflict(principal, user.user_id, replicator)
 
 
 class BootstrappedTenant(NamedTuple):
