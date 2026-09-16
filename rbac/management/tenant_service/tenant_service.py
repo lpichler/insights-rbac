@@ -29,12 +29,12 @@ def _has_user_id(user_id: Optional[str]) -> TypeGuard[str]:
 
 def _transfer_role_binding_entries(obsolete: Principal, survivor: Principal) -> None:
     """Move direct role-binding entries from obsolete to survivor."""
-    entries = list(obsolete.role_binding_entries.select_related("binding").all())
-    if not entries:
+    binding_ids = set(obsolete.role_binding_entries.values_list("binding_id", flat=True))
+    if not binding_ids:
         return
 
-    binding_ids = {entry.binding_id for entry in entries}
     RoleBinding.objects.select_for_update().filter(pk__in=binding_ids)
+    entries = list(obsolete.role_binding_entries.select_related("binding").filter(binding_id__in=binding_ids))
 
     for entry in entries:
         RoleBindingPrincipal.objects.get_or_create(
@@ -49,13 +49,12 @@ def _transfer_group_memberships(
     obsolete: Principal,
     survivor: Principal,
     obsolete_groups: list[Group],
-    obsolete_user_id: Optional[str],
 ) -> list[RelationTuple]:
     """Transfer group memberships and return SpiceDB remove tuples for the obsolete principal."""
     tuples_to_remove: list[RelationTuple] = []
     for group in obsolete_groups:
-        if obsolete_user_id:
-            tuples_to_remove.append(Group.relationship_to_user_id_for_group(str(group.uuid), obsolete_user_id))
+        if obsolete.user_id:
+            tuples_to_remove.append(Group.relationship_to_user_id_for_group(str(group.uuid), obsolete.user_id))
         if not group.principals.filter(pk=survivor.pk).exists():
             group.principals.add(survivor)
         group.principals.remove(obsolete)
@@ -67,14 +66,14 @@ def _assign_user_id_and_replicate_merge(
     obsolete_username: str,
     tuples_to_remove: list[RelationTuple],
     user_id: str,
-    replicator: Optional[InventoryReplicator],
+    replicator: InventoryReplicator,
 ) -> None:
     survivor.user_id = user_id
     survivor.save()
 
     tuples_to_add = _group_member_tuples_for_principal(survivor)
 
-    if replicator is not None and (tuples_to_add or tuples_to_remove):
+    if tuples_to_add or tuples_to_remove:
         replicator.replicate(
             ReplicationEvent(
                 event_type=ReplicationEventType.ADD_PRINCIPALS_TO_GROUP,
@@ -96,7 +95,7 @@ def merge_obsolete_principal_into_survivor(
     survivor: Principal,
     obsolete: Principal,
     user_id: str,
-    replicator: Optional[InventoryReplicator] = None,
+    replicator: InventoryReplicator,
 ) -> None:
     """
     Merge an older principal (has user_id) into the current principal (no user_id).
@@ -106,28 +105,24 @@ def merge_obsolete_principal_into_survivor(
     and direct role-binding entries from the obsolete principal are transferred to the survivor
     when both principals are in the same tenant. user_id is assigned to the survivor and the
     obsolete principal is deleted.
+
+    Raises RuntimeError if the principals belong to different tenants.
     """
     if survivor.pk == obsolete.pk:
         return
 
     if survivor.tenant_id != obsolete.tenant_id:
-        logger.warning(
-            "Refusing cross-tenant principal merge. "
-            "survivor_id=%s survivor_username=%s obsolete_id=%s obsolete_username=%s user_id=%s org_id=%s",
-            survivor.pk,
-            survivor.username,
-            obsolete.pk,
-            obsolete.username,
-            user_id,
-            survivor.tenant.org_id,
+        raise RuntimeError(
+            f"Refusing cross-tenant principal merge. "
+            f"survivor_id={survivor.pk} survivor_username={survivor.username} "
+            f"obsolete_id={obsolete.pk} obsolete_username={obsolete.username} "
+            f"user_id={user_id} org_id={survivor.tenant.org_id}"
         )
-        return
 
     obsolete_groups = list(obsolete.group.all())
-    obsolete_user_id = obsolete.user_id
     obsolete_username = obsolete.username
 
-    tuples_to_remove = _transfer_group_memberships(obsolete, survivor, obsolete_groups, obsolete_user_id)
+    tuples_to_remove = _transfer_group_memberships(obsolete, survivor, obsolete_groups)
     _transfer_role_binding_entries(obsolete, survivor)
     obsolete.delete()
     _assign_user_id_and_replicate_merge(
@@ -159,12 +154,25 @@ def _group_member_tuples_for_principal(principal: Principal) -> list:
 def _resolve_user_id_conflict(
     survivor: Principal,
     user_id: str,
-    replicator: Optional[InventoryReplicator],
+    replicator: InventoryReplicator,
 ) -> None:
-    obsolete = Principal.objects.filter(user_id=user_id, tenant=survivor.tenant).exclude(pk=survivor.pk).first()
+    obsolete = Principal.objects.filter(user_id=user_id).exclude(pk=survivor.pk).first()
     if obsolete is None:
-        raise IntegrityError(f"user_id={user_id} is already assigned but no obsolete principal was found")
+        survivor.refresh_from_db()
+        if survivor.user_id == user_id:
+            return
+        raise RuntimeError(
+            f"user_id={user_id} conflict but no owner found and survivor does not have it. "
+            f"survivor_id={survivor.pk} survivor_username={survivor.username}"
+        )
     merge_obsolete_principal_into_survivor(survivor, obsolete, user_id=user_id, replicator=replicator)
+
+
+class _NullReplicator(InventoryReplicator):
+    """No-op replicator for V1 tenants that don't use Kessel Relations."""
+
+    def replicate(self, event: ReplicationEvent):
+        pass
 
 
 def _ensure_principal_with_user_id_in_tenant(
@@ -173,12 +181,13 @@ def _ensure_principal_with_user_id_in_tenant(
     upsert: bool = False,
     replicator: Optional[InventoryReplicator] = None,
 ):
+    effective_replicator = replicator if replicator is not None else _NullReplicator()
     created = False
     principal = None
 
     if upsert:
         try:
-            defaults = {"user_id": user.user_id} if user.user_id else {}
+            defaults = {"user_id": user.user_id} if _has_user_id(user.user_id) else {}
             principal, created = Principal.objects.get_or_create(
                 username=user.username,
                 tenant=tenant,
@@ -188,7 +197,7 @@ def _ensure_principal_with_user_id_in_tenant(
             if not _has_user_id(user.user_id):
                 raise
             survivor, _ = Principal.objects.get_or_create(username=user.username, tenant=tenant)
-            _resolve_user_id_conflict(survivor, user.user_id, replicator)
+            _resolve_user_id_conflict(survivor, user.user_id, effective_replicator)
             return
     else:
         try:
@@ -222,14 +231,16 @@ def _ensure_principal_with_user_id_in_tenant(
 
     obsolete = Principal.objects.filter(user_id=user.user_id, tenant=tenant).exclude(pk=principal.pk).first()
     if obsolete is not None:
-        merge_obsolete_principal_into_survivor(principal, obsolete, user_id=user.user_id, replicator=replicator)
+        merge_obsolete_principal_into_survivor(
+            principal, obsolete, user_id=user.user_id, replicator=effective_replicator
+        )
         return
 
     principal.user_id = user.user_id
     try:
         principal.save()
     except IntegrityError:
-        _resolve_user_id_conflict(principal, user.user_id, replicator)
+        _resolve_user_id_conflict(principal, user.user_id, effective_replicator)
 
 
 class BootstrappedTenant(NamedTuple):

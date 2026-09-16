@@ -49,7 +49,8 @@ class MergePrincipalTests(IdentityRequest):
         group = Group.objects.create(name="engineering", tenant=self.tenant)
         group.principals.add(survivor)
 
-        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241")
+        tracker = _ReplicationTracker()
+        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241", replicator=tracker)
         self.assertIsNone(result)
 
         self.assertFalse(Principal.objects.filter(pk=obsolete.pk).exists())
@@ -66,12 +67,13 @@ class MergePrincipalTests(IdentityRequest):
         survivor_group.principals.add(survivor)
         obsolete_group.principals.add(obsolete)
 
-        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241")
+        tracker = _ReplicationTracker()
+        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241", replicator=tracker)
         self.assertIsNone(result)
 
         survivor.refresh_from_db()
         self.assertEqual(survivor.user_id, "54181241")
-        self.assertEqual(set(survivor.group.values_list("name", flat=True)), {"engineering", "legacy"})
+        self.assertCountEqual(survivor.group.values_list("name", flat=True), ["engineering", "legacy"])
 
     def test_merge_replicates_group_member_tuple_for_survivor(self):
         """V2 tenants replicate group membership tuples for the survivor after user_id assignment."""
@@ -127,7 +129,8 @@ class MergePrincipalTests(IdentityRequest):
         RoleBindingPrincipal.objects.create(binding=binding, principal=obsolete, source="direct")
 
         obsolete_id = obsolete.pk
-        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241")
+        tracker = _ReplicationTracker()
+        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241", replicator=tracker)
         self.assertIsNone(result)
 
         survivor.refresh_from_db()
@@ -138,8 +141,8 @@ class MergePrincipalTests(IdentityRequest):
             RoleBindingPrincipal.objects.filter(binding=binding, principal=survivor, source="direct").exists()
         )
 
-    def test_merge_refuses_cross_tenant(self):
-        """Cross-tenant merge is not supported; both principals are left unchanged."""
+    def test_merge_raises_on_cross_tenant(self):
+        """Cross-tenant merge raises RuntimeError; both principals are left unchanged."""
         other_tenant = Tenant.objects.create(
             tenant_name="other-tenant",
             account_id="99999999",
@@ -151,8 +154,9 @@ class MergePrincipalTests(IdentityRequest):
         other_group = Group.objects.create(name="other-org-group", tenant=other_tenant)
         other_group.principals.add(obsolete)
 
-        result = merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241")
-        self.assertIsNone(result)
+        tracker = _ReplicationTracker()
+        with self.assertRaises(RuntimeError):
+            merge_obsolete_principal_into_survivor(survivor, obsolete, user_id="54181241", replicator=tracker)
 
         self.assertTrue(Principal.objects.filter(pk=obsolete.pk).exists())
         survivor.refresh_from_db()
@@ -171,7 +175,8 @@ class MergePrincipalTests(IdentityRequest):
         user.user_id = "54181241"
         user.org_id = self.tenant.org_id
 
-        result = _ensure_principal_with_user_id_in_tenant(user, self.tenant)
+        tracker = _ReplicationTracker()
+        result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
         self.assertIsNone(result)
 
         self.assertFalse(Principal.objects.filter(pk=obsolete.pk).exists())
@@ -188,8 +193,9 @@ class MergePrincipalTests(IdentityRequest):
         user.user_id = "54181241"
         user.org_id = self.tenant.org_id
 
+        tracker = _ReplicationTracker()
         with patch.object(tenant_service.logger, "warning") as mock_warning:
-            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant)
+            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
         self.assertIsNone(result)
 
         mock_warning.assert_called_once()
@@ -216,8 +222,9 @@ class MergePrincipalTests(IdentityRequest):
                 )
             return original_get_or_create(*args, **kwargs)
 
+        tracker = _ReplicationTracker()
         with patch.object(Principal.objects, "get_or_create", side_effect=flaky_get_or_create):
-            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, upsert=True)
+            result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, upsert=True, replicator=tracker)
         self.assertIsNone(result)
 
         self.assertTrue(Principal.objects.filter(username="jdross@redhat.com", tenant=self.tenant).exists())
@@ -233,7 +240,8 @@ class MergePrincipalTests(IdentityRequest):
         user.user_id = "54181241"
         user.org_id = self.tenant.org_id
 
-        result = _ensure_principal_with_user_id_in_tenant(user, self.tenant)
+        tracker = _ReplicationTracker()
+        result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
         self.assertIsNone(result)
 
         self.assertTrue(Principal.objects.filter(pk=principal.pk).exists())
