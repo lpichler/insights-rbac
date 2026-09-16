@@ -4,7 +4,7 @@ import logging
 from typing import NamedTuple, Optional, Protocol, TypeGuard
 
 from django.db import IntegrityError
-from management.atomic_transactions import atomic_with_retry
+
 from management.group.model import Group
 from management.inventory_replicator.inventory_replicator import InventoryReplicator, PartitionKey, ReplicationEvent
 from management.inventory_replicator.inventory_replicator import ReplicationEventType
@@ -97,7 +97,6 @@ def _assign_user_id_and_replicate_merge(
         )
 
 
-@atomic_with_retry(retries=3)
 def merge_obsolete_principal_into_survivor(
     survivor: Principal,
     obsolete: Principal,
