@@ -6,9 +6,9 @@ from typing import NamedTuple, Optional, Protocol, TypeGuard
 from django.db import IntegrityError
 from management.atomic_transactions import atomic
 from management.group.model import Group
-from management.inventory_replicator.inventory_replicator import (
-    InventoryReplicator,
+from management.relation_replicator.relation_replicator import (
     PartitionKey,
+    RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
 )
@@ -77,7 +77,7 @@ def _assign_user_id_and_replicate_merge(
     obsolete_username: str,
     tuples_to_remove: list[RelationTuple],
     user_id: str,
-    replicator: InventoryReplicator,
+    replicator: RelationReplicator,
 ) -> None:
     survivor.user_id = user_id
     survivor.save()
@@ -106,7 +106,7 @@ def merge_obsolete_principal_into_survivor(
     survivor: Principal,
     obsolete: Principal,
     user_id: str,
-    replicator: InventoryReplicator,
+    replicator: RelationReplicator,
 ) -> None:
     """
     Merge an older principal (has user_id) into the current principal (no user_id).
@@ -165,7 +165,7 @@ def _group_member_tuples_for_principal(principal: Principal) -> list:
 def _resolve_user_id_conflict(
     survivor: Principal,
     user_id: str,
-    replicator: InventoryReplicator,
+    replicator: RelationReplicator,
 ) -> None:
     obsolete = Principal.objects.filter(user_id=user_id).exclude(pk=survivor.pk).first()
     if obsolete is None:
@@ -184,7 +184,7 @@ def _ensure_principal_with_user_id_in_tenant(
     tenant: Tenant,
     upsert: bool = False,
     *,
-    replicator: InventoryReplicator,
+    replicator: RelationReplicator,
 ):
     created = False
     principal = None

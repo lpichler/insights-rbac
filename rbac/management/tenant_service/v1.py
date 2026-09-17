@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from management.inventory_replicator.noop_replicator import NoopReplicator
+from management.relation_replicator.noop_replicator import NoopReplicator
 from management.principal.model import Principal
 from management.tenant_mapping.model import logger
 from management.tenant_service.tenant_service import BootstrappedTenant
