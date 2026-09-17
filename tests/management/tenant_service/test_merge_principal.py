@@ -248,3 +248,19 @@ class MergePrincipalTests(IdentityRequest):
 
         self.assertTrue(Principal.objects.filter(pk=principal.pk).exists())
         self.assertEqual(Principal.objects.count(), 1)
+
+    def test_ensure_principal_noop_when_bop_user_id_is_int(self):
+        """BOP may return user_id as int; it should match the string stored on Principal."""
+        principal = Principal.objects.create(username="jrobbins@redhat.com", tenant=self.tenant, user_id="7919876")
+        user = User()
+        user.username = "jrobbins@redhat.com"
+        user.user_id = 7919876
+        user.org_id = self.tenant.org_id
+
+        tracker = _ReplicationTracker()
+        result = _ensure_principal_with_user_id_in_tenant(user, self.tenant, replicator=tracker)
+        self.assertIsNone(result)
+
+        principal.refresh_from_db()
+        self.assertEqual(principal.user_id, "7919876")
+        self.assertEqual(Principal.objects.count(), 1)
