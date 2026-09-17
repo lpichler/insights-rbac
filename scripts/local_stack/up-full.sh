@@ -8,23 +8,12 @@
 #
 # Prerequisites:
 #   docker or podman (with compose), curl
-#   Optional sibling repos (auto-cloned into .local-deps/ if missing):
-#     ../inventory-api  or  INVENTORY_API_REPO
-#     ../insights-host-inventory  or  HBI_REPO
+#   Kessel Inventory and Host Inventory are resolved from upstream checkouts
+#   under .local-deps/.
 #
 # Usage:
-#   make docker-local-full-up local
-#   make docker-local-full-up-latest
-#   make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/<number>
-#   make docker-local-full-up pr=<rbac-pr-url> rbac_config_pr=<rbac-config-pr-url>
-#   make docker-local-full-up local rbac_config_repo=../rbac-config
-#   make docker-local-full-up local schema_zed_file=/path/to/stage-schema.zed
-#   ./scripts/local_stack/up-full.sh
-#   ./scripts/local_stack/up-full.sh --no-hbi
-#   ./scripts/local_stack/up-full.sh --no-build
-#   ./scripts/local_stack/up-full.sh local --rebuild=rbac
-#   ./scripts/local_stack/up-full.sh local --rebuild=rbac,rbac-config
-#   RBAC_IMAGE=my-rbac:dev ./scripts/local_stack/up-full.sh
+#   make docker-local-full-up rbac=local rbac-config=upstream
+#   make docker-local-full-up rbac=<rbac-pr-url> rbac-config=<config-pr-url>
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,105 +23,95 @@ source "${SCRIPT_DIR}/../common/logging.sh"
 # shellcheck source=../common/container_runtime.sh
 source "${SCRIPT_DIR}/../common/container_runtime.sh"
 
-INVENTORY_API_REPO="${INVENTORY_API_REPO:-${KESSEL_REPO:-}}"
-HBI_REPO="${HBI_REPO:-}"
-RBAC_PR_NUMBER="${RBAC_PR_NUMBER:-}"
+RBAC_UPSTREAM_REPO_URL="https://github.com/project-kessel/insights-rbac.git"
+RBAC_CONFIG_UPSTREAM_REPO_URL="https://github.com/project-kessel/rbac-config.git"
+INVENTORY_API_UPSTREAM_REPO_URL="https://github.com/project-kessel/inventory-api.git"
+HBI_UPSTREAM_REPO_URL="https://github.com/RedHatInsights/insights-host-inventory.git"
+
+RBAC_LOCAL_REPO_WAS_SET="${RBAC_LOCAL_REPO+x}"
+RBAC_LOCAL_REPO_FROM_ENV="${RBAC_LOCAL_REPO-}"
+RBAC_CONFIG_REPO_WAS_SET="${RBAC_CONFIG_REPO+x}"
+RBAC_CONFIG_REPO_FROM_ENV="${RBAC_CONFIG_REPO-}"
+LOCAL_STACK_CONFIG_FILE="${XDG_CONFIG_HOME:-${HOME}/.config}/insights-rbac/local-stack.env"
+INVENTORY_API_REPO="${INVENTORY_API_REPO:-${REPO_ROOT}/.local-deps/inventory-api}"
+HBI_REPO="${HBI_REPO:-${REPO_ROOT}/.local-deps/insights-host-inventory}"
 RBAC_IMAGE="${RBAC_IMAGE:-}"
-RBAC_PR_URL="${RBAC_PR_URL:-}"
-RBAC_CONFIG_PR_URL="${RBAC_CONFIG_PR_URL:-}"
+RBAC_SOURCE="${RBAC_SOURCE:-local}"
+RBAC_CONFIG_SOURCE="${RBAC_CONFIG_SOURCE:-upstream}"
+RBAC_LOCAL_REPO="${RBAC_LOCAL_REPO:-}"
+RBAC_PR_NUMBER=""
+RBAC_PR_URL=""
+RBAC_CONFIG_PR_URL=""
 RBAC_CONFIG_REPO="${RBAC_CONFIG_REPO:-}"
-RBAC_CONFIG_REFRESH=false
+DEFAULT_RBAC_CONFIG_REPO="${REPO_ROOT}/../rbac-config"
+RBAC_SOURCE_KIND="local"
+RBAC_SOURCE_REF=""
+RBAC_CONFIG_SOURCE_KIND="upstream"
+RBAC_CONFIG_SOURCE_REF=""
 COMPOSE_PULL_MODE="${COMPOSE_PULL_MODE:-missing}"
-SKIP_HBI=false
-SKIP_BUILD=false
-PULL_DEPENDENCIES=false
-REBUILD_SCOPE=""
 HBI_COMPOSE_PROJECT="${HBI_COMPOSE_PROJECT:-hbi-kessel-local}"
-DEPLOYMENT_SOURCE="${RBAC_DEPLOYMENT_SOURCE:-local}"
+DEFAULT_USERS_FIXTURE="${FULL_STACK_DEFAULT_USERS_FIXTURE:-${REPO_ROOT}/scripts/validations/api/actions/full-stack-default-users.yaml}"
+DEFAULT_USERS_APPLY_SCRIPT="${FULL_STACK_DEFAULT_USERS_APPLY_SCRIPT:-${REPO_ROOT}/scripts/validations/api/actions/apply-rbac-users-config.sh}"
+STACK_WAS_RUNNING=false
+RBAC_SOURCE_LABEL="${RBAC_SOURCE_LABEL:-${RBAC_SOURCE}}"
+RBAC_CONFIG_SOURCE_LABEL="${RBAC_CONFIG_SOURCE_LABEL:-${RBAC_CONFIG_SOURCE}}"
+unset RBAC_CONFIG_FILE SCHEMA_ZED_FILE RBAC_CONFIG_URL SCHEMA_ZED_URL
+
+if [[ -f "${LOCAL_STACK_CONFIG_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${LOCAL_STACK_CONFIG_FILE}"
+fi
+if [[ "${RBAC_LOCAL_REPO_WAS_SET}" == x ]]; then
+  RBAC_LOCAL_REPO="${RBAC_LOCAL_REPO_FROM_ENV}"
+fi
+if [[ "${RBAC_CONFIG_REPO_WAS_SET}" == x ]]; then
+  RBAC_CONFIG_REPO="${RBAC_CONFIG_REPO_FROM_ENV}"
+fi
+unset RBAC_LOCAL_REPO_WAS_SET RBAC_LOCAL_REPO_FROM_ENV RBAC_CONFIG_REPO_WAS_SET RBAC_CONFIG_REPO_FROM_ENV
 
 usage() {
   cat <<'EOF'
-Usage: up-full.sh [pr|local] [options]
+Usage: up-full.sh
 
-  pr            Build the current checkout as insights-rbac-pr-<number>:dev.
-  local         Build the current checkout as insights-rbac-local:dev (default).
+Source selection is made by make:
+  make docker-local-full-up rbac=<source> rbac-config=<source>
 
-  --no-hbi      Start Kessel + Debezium + RBAC only (skip Host Inventory)
-  --no-build    Skip building the local RBAC image (use existing RBAC_IMAGE tag)
-  --pull-dependencies
-                Fast-forward the resolved Inventory API and Host Inventory checkouts
-  --rebuild=rbac
-                Rebuild and recreate only the local RBAC services
-  --rebuild=rbac,rbac-config
-                Rebuild RBAC and local rbac-config, refresh Kessel, and reseed RBAC
-  -h, --help    Show this help
+Sources:
+  local         Use a local checkout (prompted if no path is supplied).
+  upstream      Use the latest commit from the hard-coded upstream repository.
+  <PR URL>      Fetch and use the GitHub pull request.
+  <commit SHA>  Fetch and use the specified commit.
+
+Hard-coded upstream repositories:
+  RBAC          https://github.com/project-kessel/insights-rbac.git
+  rbac-config   https://github.com/project-kessel/rbac-config.git
+  Inventory     https://github.com/project-kessel/inventory-api.git
+  HBI           https://github.com/RedHatInsights/insights-host-inventory.git
+
+Defaults:
+  RBAC          local
+  rbac-config   upstream
+  Kessel Inventory and Host Inventory are always upstream.
+
+When the stack is already running, the selected sources are rebuilt or
+refreshed and a summary is printed.
 
 Environment:
-  INVENTORY_API_REPO   Path to project-kessel/inventory-api checkout
-  HBI_REPO             Path to RedHatInsights/insights-host-inventory checkout
   RBAC_IMAGE           Docker image tag for RBAC services (default depends on source)
-  RBAC_PR_NUMBER       PR number used by the pr source when RBAC_PR_URL is not set
-  RBAC_PR_URL           GitHub PR URL; fetched into a temporary worktree in pr mode
-  RBAC_CONFIG_PR_URL    GitHub rbac-config PR URL; uses its stage ConfigMap and schema.zed
-  RBAC_CONFIG_REPO      Local rbac-config checkout; builds its stage KSL schema and uses its stage ConfigMap
-  SCHEMA_ZED_FILE       Local generated stage schema.zed to copy into the Relations API
-  COMPOSE_PULL_MODE    Passed to inventory-api start-full-kessel (default: missing)
   INVENTORY_DB_PORT    Host port for HBI Postgres (default: 15433)
   HBI_WEB_PORT         Host port for HBI API (default: 8080)
   UNLEASH_TOKEN        Required by Host Inventory dev.yml parsing (default: local-dev-token)
+
+Local source paths are saved in:
+  ${XDG_CONFIG_HOME:-~/.config}/insights-rbac/local-stack.env
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    pr|local) DEPLOYMENT_SOURCE="$1"; shift ;;
-    --no-hbi) SKIP_HBI=true; shift ;;
-    --no-build) SKIP_BUILD=true; shift ;;
-    --pull-dependencies) PULL_DEPENDENCIES=true; shift ;;
-    --rebuild=rbac|--rebuild=rbac,rbac-config) REBUILD_SCOPE="${1#--rebuild=}"; shift ;;
-    -h | --help) usage; exit 0 ;;
-    *)
-      log-err "Unknown option: $1"
-      usage
-      exit 1
-      ;;
-  esac
-done
-
-if [[ -n "${REBUILD_SCOPE}" ]]; then
-  if [[ "${DEPLOYMENT_SOURCE}" != local ]]; then
-    log-err '--rebuild is supported only for the local deployment source.'
-    exit 1
-  fi
-  exec "${SCRIPT_DIR}/rebuild-rbac.sh" "--rebuild=${REBUILD_SCOPE}"
+if [[ $# -gt 0 ]]; then
+  log-err "Source selection must use make variables: rbac=<source> rbac-config=<source>."
+  usage
+  exit 1
 fi
-
-if [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]]; then
-  if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/([0-9]+)(/.*)?$ ]]; then
-    RBAC_PR_NUMBER="${BASH_REMATCH[1]}"
-  else
-    log-err "RBAC_PR_URL must be a GitHub pull request URL: ${RBAC_PR_URL}"
-    exit 1
-  fi
-fi
-
-case "${DEPLOYMENT_SOURCE}" in
-  pr)
-    [[ -n "${RBAC_PR_NUMBER}" ]] || {
-      log-err "pr source requires RBAC_PR_URL or RBAC_PR_NUMBER."
-      exit 1
-    }
-    RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-pr-${RBAC_PR_NUMBER}:dev}"
-    ;;
-  local)
-    RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-local:dev}"
-    ;;
-  *)
-    log-err "Unknown deployment source '${DEPLOYMENT_SOURCE}'. Expected 'pr' or 'local'."
-    usage
-    exit 1
-    ;;
-esac
 
 require_cmd() {
   if ! command -v "$1" &>/dev/null; then
@@ -141,41 +120,145 @@ require_cmd() {
   fi
 }
 
-start_pr_worktree() {
-  [[ "${DEPLOYMENT_SOURCE}" == pr && -n "${RBAC_PR_URL}" ]] || return 0
-  [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
+prompt_local_repo() {
+  local service="$1" default_path="$2" current_path
 
-  local repository pr_number pr_worktree status
-  if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)(/.*)?$ ]]; then
-    repository="https://github.com/${BASH_REMATCH[1]}.git"
-    pr_number="${BASH_REMATCH[2]}"
-  else
-    log-err "RBAC_PR_URL must be a GitHub pull request URL: ${RBAC_PR_URL}"
-    exit 1
+  case "${service}" in
+    RBAC) current_path="${RBAC_LOCAL_REPO:-}" ;;
+    rbac-config) current_path="${RBAC_CONFIG_REPO:-}" ;;
+  esac
+  if [[ -n "${current_path}" && -d "${current_path}" ]]; then
+    return 0
+  fi
+  if [[ -n "${current_path}" ]]; then
+    log-warn "Saved local ${service} checkout does not exist: ${current_path}"
+    current_path=""
+    case "${service}" in
+      RBAC) RBAC_LOCAL_REPO="" ;;
+      rbac-config) RBAC_CONFIG_REPO="" ;;
+    esac
   fi
 
-  pr_worktree="$(mktemp -d "${TMPDIR:-/tmp}/insights-rbac-pr-${pr_number}.XXXXXX")"
+  if [[ ! -t 0 || ! -t 1 || ! -r /dev/tty ]]; then
+    log-info "Using default local ${service} checkout: ${default_path}"
+    return 0
+  fi
+
+  printf 'Local %s checkout [%s] (Enter to use default): ' "${service}" "${default_path}" >/dev/tty
+  IFS= read -r current_path </dev/tty || current_path=""
+  if [[ -z "${current_path}" ]]; then
+    current_path="${default_path}"
+  fi
+
+  case "${service}" in
+    RBAC) RBAC_LOCAL_REPO="${current_path}" ;;
+    rbac-config) RBAC_CONFIG_REPO="${current_path}" ;;
+  esac
+}
+
+resolve_local_source_paths() {
+  if [[ "${RBAC_SOURCE_KIND}" == local ]]; then
+    prompt_local_repo RBAC "${REPO_ROOT}"
+    RBAC_LOCAL_REPO="$(cd "${RBAC_LOCAL_REPO:-${REPO_ROOT}}" 2>/dev/null && pwd)" || {
+      log-err "RBAC local checkout is not a directory: ${RBAC_LOCAL_REPO}"
+      exit 1
+    }
+    log-info "Using local RBAC checkout at ${RBAC_LOCAL_REPO}"
+  fi
+
+  if [[ "${RBAC_CONFIG_SOURCE}" == local ]]; then
+    prompt_local_repo rbac-config "${DEFAULT_RBAC_CONFIG_REPO}"
+    RBAC_CONFIG_REPO="$(cd "${RBAC_CONFIG_REPO:-${DEFAULT_RBAC_CONFIG_REPO}}" 2>/dev/null && pwd)" || {
+      log-err "Local rbac-config checkout is not a directory: ${RBAC_CONFIG_REPO}"
+      exit 1
+    }
+    log-info "Using local rbac-config checkout at ${RBAC_CONFIG_REPO}"
+  fi
+}
+
+save_local_source_paths() {
+  [[ "${RBAC_PR_WORKTREE:-false}" != true ]] || return 0
+  [[ -n "${RBAC_LOCAL_REPO:-}" || -n "${RBAC_CONFIG_REPO:-}" ]] || return 0
+
+  local config_dir config_tmp
+  config_dir="$(dirname "${LOCAL_STACK_CONFIG_FILE}")"
+  mkdir -p "${config_dir}"
+  umask 077
+  config_tmp="$(mktemp "${LOCAL_STACK_CONFIG_FILE}.tmp.XXXXXX")"
+  {
+    printf '# User-local paths for make docker-local-full-up.\n'
+    printf 'RBAC_LOCAL_REPO=%q\n' "${RBAC_LOCAL_REPO:-}"
+    printf 'RBAC_CONFIG_REPO=%q\n' "${RBAC_CONFIG_REPO:-}"
+  } >"${config_tmp}"
+  if [[ -f "${LOCAL_STACK_CONFIG_FILE}" ]] && cmp -s "${config_tmp}" "${LOCAL_STACK_CONFIG_FILE}"; then
+    rm -f "${config_tmp}"
+    return 0
+  fi
+  mv "${config_tmp}" "${LOCAL_STACK_CONFIG_FILE}"
+  log-info "Saved local source paths to ${LOCAL_STACK_CONFIG_FILE}"
+}
+
+start_rbac_worktree() {
+  [[ "${RBAC_SOURCE_KIND}" != local ]] || return 0
+  [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
+
+  local fetch_ref repository pr_number worktree_prefix
+  case "${RBAC_SOURCE_KIND}" in
+    upstream)
+      fetch_ref=HEAD
+      worktree_prefix=upstream
+      ;;
+    pr)
+      fetch_ref="pull/${RBAC_PR_NUMBER}/head"
+      worktree_prefix="pr-${RBAC_PR_NUMBER}"
+      ;;
+    sha)
+      fetch_ref="${RBAC_SOURCE_REF}"
+      worktree_prefix="sha-${RBAC_SOURCE_REF:0:12}"
+      ;;
+    *)
+      log-err "Unsupported RBAC source kind: ${RBAC_SOURCE_KIND}"
+      exit 1
+      ;;
+  esac
+
+  repository="${RBAC_UPSTREAM_REPO_URL}"
+  local pr_worktree status
+  pr_worktree="$(mktemp -d "${TMPDIR:-/tmp}/insights-rbac-${worktree_prefix}.XXXXXX")"
   rmdir "${pr_worktree}"
-  log-info "Fetching PR #${pr_number} from ${repository}..."
-  git -C "${REPO_ROOT}" fetch --no-tags "${repository}" "pull/${pr_number}/head"
+  log-info "Fetching RBAC ${RBAC_SOURCE_LABEL} from ${repository}..."
+  git -C "${REPO_ROOT}" fetch --no-tags "${repository}" "${fetch_ref}"
   git -C "${REPO_ROOT}" worktree add --detach "${pr_worktree}" FETCH_HEAD >/dev/null
 
+  # Older PR branches may predate the local full-stack helper directory and
+  # shared shell helpers. Copy the current orchestration files into the
+  # temporary checkout before building and starting that PR's application.
+  mkdir -p "${pr_worktree}/scripts/common"
+  mkdir -p "${pr_worktree}/scripts/local_stack"
+  cp "${SCRIPT_DIR}/../common/container_runtime.sh" "${pr_worktree}/scripts/common/container_runtime.sh"
+  cp "${SCRIPT_DIR}/../common/logging.sh" "${pr_worktree}/scripts/common/logging.sh"
   cp "${SCRIPT_DIR}/up-full.sh" "${pr_worktree}/scripts/local_stack/up-full.sh"
   cp "${SCRIPT_DIR}/full-kessel.rbac-override.yml" \
     "${pr_worktree}/scripts/local_stack/full-kessel.rbac-override.yml"
   cp "${SCRIPT_DIR}/prepare-full-kessel-configs.sh" \
     "${pr_worktree}/scripts/local_stack/prepare-full-kessel-configs.sh"
+  cp "${SCRIPT_DIR}/start-kessel-compose.sh" "${pr_worktree}/scripts/local_stack/start-kessel-compose.sh"
+  cp "${SCRIPT_DIR}/ensure-hbi-kafka-topics.sh" \
+    "${pr_worktree}/scripts/local_stack/ensure-hbi-kafka-topics.sh"
+  cp "${SCRIPT_DIR}/extract_rbac_role_definitions.py" \
+    "${pr_worktree}/scripts/local_stack/extract_rbac_role_definitions.py"
+  cp "${SCRIPT_DIR}/hbi.integration.yml" "${pr_worktree}/scripts/local_stack/hbi.integration.yml"
   chmod +x "${pr_worktree}/scripts/local_stack/up-full.sh"
 
-  log-info "Using PR #${pr_number} checkout at ${pr_worktree}"
-  local child_args=(pr)
-  [[ "${SKIP_HBI}" == true ]] && child_args+=(--no-hbi)
-  [[ "${SKIP_BUILD}" == true ]] && child_args+=(--no-build)
-  [[ "${PULL_DEPENDENCIES}" == true ]] && child_args+=(--pull-dependencies)
-
-  if RBAC_PR_WORKTREE=true RBAC_PR_URL= RBAC_PR_NUMBER="${pr_number}" \
+  log-info "Using RBAC ${RBAC_SOURCE_LABEL} checkout at ${pr_worktree}"
+  if RBAC_PR_WORKTREE=true RBAC_SOURCE=local RBAC_SOURCE_LABEL="${RBAC_SOURCE_LABEL}" \
+    RBAC_LOCAL_REPO="${pr_worktree}" RBAC_CONFIG_SOURCE="${RBAC_CONFIG_SOURCE}" \
+    RBAC_CONFIG_REPO="${RBAC_CONFIG_REPO}" \
+    INVENTORY_API_REPO="${INVENTORY_API_REPO}" HBI_REPO="${HBI_REPO}" \
+    FULL_STACK_DEFAULT_USERS_FIXTURE="${DEFAULT_USERS_FIXTURE}" \
+    FULL_STACK_DEFAULT_USERS_APPLY_SCRIPT="${DEFAULT_USERS_APPLY_SCRIPT}" \
     RBAC_IMAGE="${RBAC_IMAGE}" \
-    "${pr_worktree}/scripts/local_stack/up-full.sh" "${child_args[@]}"; then
+    "${pr_worktree}/scripts/local_stack/up-full.sh"; then
     status=0
   else
     status=$?
@@ -218,7 +301,7 @@ select_local_rbac_config() {
   fi
 
   local config_repo config_file schema_file
-  config_repo="$(cd "${RBAC_CONFIG_REPO}" 2>/dev/null && pwd)" || {
+  config_repo="$(cd "${RBAC_CONFIG_REPO:-${DEFAULT_RBAC_CONFIG_REPO}}" 2>/dev/null && pwd)" || {
     log-err "RBAC_CONFIG_REPO is not a directory: ${RBAC_CONFIG_REPO}"
     exit 1
   }
@@ -244,34 +327,111 @@ select_local_rbac_config() {
   fi
 }
 
-resolve_inventory_api_repo() {
-  if [[ -z "${INVENTORY_API_REPO}" || ! -f "${INVENTORY_API_REPO}/scripts/start-full-kessel.sh" ]]; then
-    INVENTORY_API_REPO="$(dirname "${REPO_ROOT}")/inventory-api"
+is_commit_sha() {
+  [[ "${1}" =~ ^[0-9a-fA-F]{7,64}$ ]]
+}
+
+select_rbac_source() {
+  case "${RBAC_SOURCE}" in
+    local)
+      RBAC_SOURCE_KIND=local
+      RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-local:dev}"
+      ;;
+    upstream)
+      RBAC_SOURCE_KIND=upstream
+      RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-local:dev}"
+      ;;
+    https://github.com/*/pull/[0-9]*|https://github.com/*/pull/[0-9]*/*)
+      RBAC_SOURCE_KIND=pr
+      RBAC_PR_URL="${RBAC_SOURCE}"
+      if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/([0-9]+)(/.*)?$ ]]; then
+        RBAC_PR_NUMBER="${BASH_REMATCH[1]}"
+      else
+        log-err "RBAC source must be local, upstream, or a GitHub pull request URL: ${RBAC_SOURCE}"
+        exit 1
+      fi
+      RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-pr-${RBAC_PR_NUMBER}:dev}"
+      ;;
+    *)
+      if is_commit_sha "${RBAC_SOURCE}"; then
+        RBAC_SOURCE_KIND=sha
+        RBAC_SOURCE_REF="${RBAC_SOURCE}"
+        RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-sha-${RBAC_SOURCE:0:12}:dev}"
+        return 0
+      fi
+      log-err "RBAC source must be local, upstream, a GitHub pull request URL, or a commit SHA: ${RBAC_SOURCE}"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+select_rbac_config_source() {
+  case "${RBAC_CONFIG_SOURCE}" in
+    upstream)
+      RBAC_CONFIG_SOURCE_KIND=upstream
+      export RBAC_CONFIG_URL="https://raw.githubusercontent.com/project-kessel/rbac-config/refs/heads/master/_private/configmaps/stage/rbac-config.yml"
+      export SCHEMA_ZED_URL="https://raw.githubusercontent.com/project-kessel/rbac-config/refs/heads/master/configs/stage/schemas/schema.zed"
+      log-info "Using upstream rbac-config stage configuration from ${RBAC_CONFIG_UPSTREAM_REPO_URL}."
+      ;;
+    local)
+      RBAC_CONFIG_SOURCE_KIND=local
+      select_local_rbac_config
+      ;;
+    https://github.com/*/pull/[0-9]*|https://github.com/*/pull/[0-9]*/*)
+      RBAC_CONFIG_SOURCE_KIND=pr
+      RBAC_CONFIG_PR_URL="${RBAC_CONFIG_SOURCE}"
+      select_rbac_config_pr
+      ;;
+    *)
+      if is_commit_sha "${RBAC_CONFIG_SOURCE}"; then
+        RBAC_CONFIG_SOURCE_KIND=sha
+        RBAC_CONFIG_SOURCE_REF="${RBAC_CONFIG_SOURCE}"
+        export RBAC_CONFIG_URL="https://raw.githubusercontent.com/project-kessel/rbac-config/${RBAC_CONFIG_SOURCE}/_private/configmaps/stage/rbac-config.yml"
+        export SCHEMA_ZED_URL="https://raw.githubusercontent.com/project-kessel/rbac-config/${RBAC_CONFIG_SOURCE}/configs/stage/schemas/schema.zed"
+        log-info "Using rbac-config commit ${RBAC_CONFIG_SOURCE}."
+        return 0
+      fi
+      log-err "rbac-config source must be local, upstream, a GitHub pull request URL, or a commit SHA: ${RBAC_CONFIG_SOURCE}"
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+stack_is_running() {
+  [[ "$("${CONTAINER_RUNTIME}" container inspect --format '{{.State.Running}}' full-kessel-rbac-server-1 2>/dev/null || true)" == true ]]
+}
+
+print_source_summary() {
+  log-info "Deployment sources: RBAC=${RBAC_SOURCE_LABEL}, rbac-config=${RBAC_CONFIG_SOURCE_LABEL}, HBI=upstream, Kessel Inventory=upstream."
+  if [[ "${STACK_WAS_RUNNING}" == true ]]; then
+    log-info 'Existing Docker stack detected; rebuilding or refreshing services for the selected sources.'
   fi
+}
+
+resolve_inventory_api_repo() {
   if [[ ! -f "${INVENTORY_API_REPO}/scripts/start-full-kessel.sh" ]]; then
-    local clone_dir="${REPO_ROOT}/.local-deps/inventory-api"
-    if [[ ! -f "${clone_dir}/scripts/start-full-kessel.sh" ]]; then
-      log-info "Cloning inventory-api into ${clone_dir}..."
-      mkdir -p "${REPO_ROOT}/.local-deps"
-      git clone --depth 1 https://github.com/project-kessel/inventory-api.git "${clone_dir}"
+    if [[ -e "${INVENTORY_API_REPO}" ]]; then
+      log-err "Upstream inventory-api checkout is incomplete: ${INVENTORY_API_REPO}"
+      exit 1
     fi
-    INVENTORY_API_REPO="${clone_dir}"
+    log-info "Cloning upstream inventory-api into ${INVENTORY_API_REPO}..."
+    mkdir -p "$(dirname "${INVENTORY_API_REPO}")"
+    git clone --depth 1 "${INVENTORY_API_UPSTREAM_REPO_URL}" "${INVENTORY_API_REPO}"
   fi
   log-info "Using inventory-api at ${INVENTORY_API_REPO}"
 }
 
 resolve_hbi_repo() {
-  if [[ -z "${HBI_REPO}" || ! -f "${HBI_REPO}/dev.yml" ]]; then
-    HBI_REPO="$(dirname "${REPO_ROOT}")/insights-host-inventory"
-  fi
   if [[ ! -f "${HBI_REPO}/dev.yml" ]]; then
-    local clone_dir="${REPO_ROOT}/.local-deps/insights-host-inventory"
-    if [[ ! -f "${clone_dir}/dev.yml" ]]; then
-      log-info "Cloning insights-host-inventory into ${clone_dir}..."
-      mkdir -p "${REPO_ROOT}/.local-deps"
-      git clone --depth 1 https://github.com/RedHatInsights/insights-host-inventory.git "${clone_dir}"
+    if [[ -e "${HBI_REPO}" ]]; then
+      log-err "Upstream insights-host-inventory checkout is incomplete: ${HBI_REPO}"
+      exit 1
     fi
-    HBI_REPO="${clone_dir}"
+    log-info "Cloning upstream insights-host-inventory into ${HBI_REPO}..."
+    mkdir -p "$(dirname "${HBI_REPO}")"
+    git clone --depth 1 "${HBI_UPSTREAM_REPO_URL}" "${HBI_REPO}"
   fi
   log-info "Using Host Inventory at ${HBI_REPO}"
 }
@@ -284,22 +444,20 @@ initialize_hbi_submodules() {
 pull_repository() {
   local name="$1"
   local repository="$2"
+  local upstream_url="$3"
 
-  [[ "${PULL_DEPENDENCIES}" == true ]] || return 0
-  log-info "Fast-forwarding ${name} at ${repository}..."
-  git -C "${repository}" pull --ff-only
+  log-info "Updating upstream ${name} from ${upstream_url}..."
+  git -C "${repository}" fetch --no-tags "${upstream_url}" HEAD
+  git -C "${repository}" merge --ff-only FETCH_HEAD
 }
 
 start_kessel_stack() {
   export RBAC_IMAGE
   export COMPOSE_PULL_MODE
-  export RBAC_CONFIG_REFRESH
   export DOCKER="${CONTAINER_RUNTIME}"
-  if [[ "${RBAC_CONFIG_REFRESH}" == true ]]; then
-    log-info 'Refreshing RBAC Config in the running local stack...'
-  else
-    log-info "Starting Kessel + Debezium + RBAC (RBAC_IMAGE=${RBAC_IMAGE})..."
-  fi
+  export RBAC_FORCE_RECREATE
+  export STACK_WAS_RUNNING
+  log-info "Building and starting Kessel + Debezium + RBAC (RBAC_IMAGE=${RBAC_IMAGE})..."
   "${SCRIPT_DIR}/start-kessel-compose.sh" \
     "${INVENTORY_API_REPO}" \
     "${REPO_ROOT}/scripts/local_stack/full-kessel.rbac-override.yml"
@@ -321,6 +479,34 @@ start_hbi() {
     up -d --build --no-deps db hbi-web hbi-mq
 }
 
+load_default_users() {
+  [[ "${FULL_STACK_LOAD_DEFAULT_USERS:-true}" == true ]] || return 0
+  [[ -f "${DEFAULT_USERS_FIXTURE}" ]] || {
+    log-err "Default full-stack user fixture not found: ${DEFAULT_USERS_FIXTURE}"
+    return 1
+  }
+  [[ -x "${DEFAULT_USERS_APPLY_SCRIPT}" ]] || {
+    log-err "Default user loader is not executable: ${DEFAULT_USERS_APPLY_SCRIPT}"
+    return 1
+  }
+
+  log-info "Waiting for RBAC API before loading default full-stack users..."
+  local attempt
+  for attempt in $(seq 1 60); do
+    if curl -fsS http://localhost:9080/metrics >/dev/null 2>&1; then
+      log-info "Loading default V1/V2 local users from ${DEFAULT_USERS_FIXTURE}..."
+      CONTAINER_RUNTIME="${CONTAINER_RUNTIME}" \
+        RBAC_SERVER_CONTAINER=full-kessel-rbac-server-1 \
+        "${DEFAULT_USERS_APPLY_SCRIPT}" --file "${DEFAULT_USERS_FIXTURE}"
+      return 0
+    fi
+    sleep 2
+  done
+
+  log-err 'RBAC API did not become ready; default users were not loaded.'
+  return 1
+}
+
 print_endpoints() {
   cat <<EOF
 
@@ -335,7 +521,7 @@ Stack endpoints:
   HBI Postgres:      localhost:${INVENTORY_DB_PORT:-15433}
 
 Verify workspace create + RYW (after stack is healthy):
-  ./scripts/validations/api/create-workspace-local.sh --no-start
+  ./scripts/validations/api/create-workspace.sh --no-start
 
 Verify a workspace permission (replace <workspace-uuid>):
   ./scripts/zed_local.sh check rbac/workspace:<workspace-uuid> view rbac/principal:redhat/1111111
@@ -346,50 +532,36 @@ EOF
 require_cmd curl
 require_cmd git
 
-start_pr_worktree
-select_rbac_config_pr
-select_local_rbac_config
+select_rbac_source
+resolve_local_source_paths
+save_local_source_paths
+start_rbac_worktree
+select_rbac_config_source
 
 detect_container_runtime
-
-# A config PR only changes mounted role definitions and the Relations API
-# schema. Reuse an already-running local stack instead of rebuilding RBAC or
-# HBI and recreating every Compose service. A first launch still follows the
-# normal full-start path because it needs the local RBAC image and dependencies.
-if [[ "${DEPLOYMENT_SOURCE}" == local && ( -n "${RBAC_CONFIG_PR_URL}" || -n "${SCHEMA_ZED_FILE:-}" ) ]]; then
-  if "${CONTAINER_RUNTIME}" image inspect "${RBAC_IMAGE}" >/dev/null 2>&1 \
-    && [[ "$("${CONTAINER_RUNTIME}" container inspect --format '{{.State.Running}}' full-kessel-rbac-server-1 2>/dev/null)" == true ]]; then
-    RBAC_CONFIG_REFRESH=true
-    SKIP_BUILD=true
-    SKIP_HBI=true
-    log-info 'Existing local stack found; RBAC Config update will not rebuild images or HBI.'
-  else
-    log-info 'No running local stack found; performing the initial full build and startup.'
-  fi
+if stack_is_running; then
+  STACK_WAS_RUNNING=true
 fi
+print_source_summary
 
 resolve_inventory_api_repo
-pull_repository "inventory-api" "${INVENTORY_API_REPO}"
+pull_repository "inventory-api" "${INVENTORY_API_REPO}" "${INVENTORY_API_UPSTREAM_REPO_URL}"
 
-if [[ "${SKIP_BUILD}" != true ]]; then
-  log-info "Building local RBAC image ${RBAC_IMAGE}..."
-  "${CONTAINER_RUNTIME}" build -t "${RBAC_IMAGE}" "${REPO_ROOT}"
-  export RBAC_FORCE_RECREATE=true
-else
-  log-info "Skipping RBAC image build (RBAC_IMAGE=${RBAC_IMAGE})"
-  export RBAC_FORCE_RECREATE=false
-fi
+log-info "Building local RBAC image ${RBAC_IMAGE}..."
+"${CONTAINER_RUNTIME}" build -t "${RBAC_IMAGE}" "${RBAC_LOCAL_REPO:-${REPO_ROOT}}"
+export RBAC_FORCE_RECREATE=true
 
 start_kessel_stack
 
-if [[ "${SKIP_HBI}" != true ]]; then
-  resolve_hbi_repo
-  pull_repository "insights-host-inventory" "${HBI_REPO}"
-  initialize_hbi_submodules
-  start_hbi
-else
-  log-info "Skipping Host Inventory (--no-hbi)"
-fi
+resolve_hbi_repo
+pull_repository "insights-host-inventory" "${HBI_REPO}" "${HBI_UPSTREAM_REPO_URL}"
+initialize_hbi_submodules
+start_hbi
+load_default_users
 
-log-info "Full local stack started."
+if [[ "${STACK_WAS_RUNNING}" == true ]]; then
+  log-info 'Existing Docker stack rebuilt for the selected sources.'
+else
+  log-info 'Full local stack started.'
+fi
 print_endpoints

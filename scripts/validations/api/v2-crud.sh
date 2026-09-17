@@ -109,8 +109,8 @@ usage() {
   cat <<'EOF'
 Usage: v2-crud.sh
 
-Run this after `make docker-local-full-up local` or
-`make docker-local-full-up pr=<github-pr-url>`.
+Run this after `make docker-local-full-up rbac=local rbac-config=upstream` or
+`make docker-local-full-up rbac=<github-pr-url>`.
 
 No existing user setup is required. The script creates a temporary user in
 org_id=11111 through actions/apply-rbac-users-config.sh, temporarily enables

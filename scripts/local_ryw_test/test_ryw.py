@@ -36,6 +36,7 @@ DEFAULT_ORG_ID = os.environ.get("RYW_ORG_ID", "11111")
 DEFAULT_ACCOUNT_ID = os.environ.get("RYW_ACCOUNT_ID", "10001")
 DEFAULT_USERNAME = os.environ.get("RYW_USERNAME", "user_dev")
 DEFAULT_USER_ID = os.environ.get("RYW_USER_ID", "51736777")
+DEFAULT_IS_ORG_ADMIN = os.environ.get("RYW_IS_ORG_ADMIN", "true").lower() in {"1", "true", "yes", "on"}
 
 RYW_CHANNEL = "READ_YOUR_WRITES_CHANNEL"
 
@@ -55,7 +56,7 @@ def make_identity_header(
             "user": {
                 "username": username,
                 "email": f"{username}@example.com",
-                "is_org_admin": True,
+                "is_org_admin": DEFAULT_IS_ORG_ADMIN,
                 "user_id": user_id,
             },
         }
