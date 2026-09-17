@@ -6,13 +6,13 @@ from typing import NamedTuple, Optional, Protocol, TypeGuard
 from django.db import IntegrityError
 from management.atomic_transactions import atomic
 from management.group.model import Group
+from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
 )
-from management.principal.model import Principal
 from management.role_binding.model import RoleBinding, RoleBindingPrincipal
 from management.tenant_mapping.model import TenantMapping
 from management.workspace.model import Workspace

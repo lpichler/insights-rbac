@@ -18,11 +18,9 @@
 
 import copy
 
-from management.atomic_transactions import atomic
 from management.models import Principal
 
 
-@atomic
 def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
@@ -33,6 +31,12 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     Validates the user's org_id against the tenant and falls back to the
     tenant's org_id when the user has none.  A shallow copy is used when a
     fallback is needed so the caller's object is never mutated.
+
+    This function does **not** open its own transaction.  Callers are
+    responsible for wrapping the call in an appropriate transaction boundary
+    (e.g. ``run_atomic_with_retry``).  The middleware and group-view callers
+    already do so, which avoids opening a SERIALIZABLE transaction for the
+    common no-op path (principal already has ``user_id``).
 
     Raises on failure — callers that want best-effort behaviour should catch
     exceptions themselves.

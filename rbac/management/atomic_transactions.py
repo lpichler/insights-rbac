@@ -22,7 +22,7 @@ from collections.abc import Callable
 import pgtransaction
 from django.conf import settings
 from django.db import transaction
-from django.db.utils import DatabaseError
+from django.db.utils import OperationalError
 
 # Shared isolation level configuration
 ISOLATION_LEVEL = pgtransaction.SERIALIZABLE
@@ -74,11 +74,36 @@ def run_atomic_with_retry[T](retries: int, callable: Callable[[], T]) -> T:  # n
     return wrapped()
 
 
+def _is_serialization_or_deadlock(exc: OperationalError) -> bool:
+    """Check if an OperationalError is a serialization failure (40001) or deadlock (40P01).
+
+    Checks both by psycopg2 exception class (for class-based dispatch) and by
+    pgcode (for raw OperationalError wrapping).
+    """
+    from psycopg2.errors import DeadlockDetected, SerializationFailure
+
+    cause = exc.__cause__
+    if cause is None:
+        return False
+    if isinstance(cause, (SerializationFailure, DeadlockDetected)):
+        return True
+    if hasattr(cause, "pgcode") and cause.pgcode in ("40001", "40P01"):
+        return True
+    return False
+
+
 def run_nested_transaction_retries[T](retries: int, callable: Callable[[], T]):  # noqa: D103
     """
     Run the provided function in a nested transaction with the provided number of retries.
 
-    This works even if it is run in an outer transaction.
+    Only retries on SerializationFailure (40001) or DeadlockDetected (40P01).
+    Other database errors propagate immediately.
+
+    NOTE: When running inside an outer SERIALIZABLE transaction, PostgreSQL
+    aborts the *entire* transaction on serialization failure — not just the
+    savepoint.  Inner savepoint retries therefore cannot recover from true
+    serialization conflicts in that scenario.  Prefer ``run_atomic_with_retry``
+    at the outermost boundary for proper retry semantics.
     """
     if retries < 1:
         raise ValueError("Must attempt at least 1")
@@ -89,8 +114,11 @@ def run_nested_transaction_retries[T](retries: int, callable: Callable[[], T]): 
         try:
             with transaction.atomic():
                 return callable()
-        except DatabaseError as e:
-            last_exception = e
+        except OperationalError as e:
+            if _is_serialization_or_deadlock(e):
+                last_exception = e
+            else:
+                raise
 
     raise last_exception
 
