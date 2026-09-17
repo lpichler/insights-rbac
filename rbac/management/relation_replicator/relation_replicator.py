@@ -21,14 +21,16 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Dict, TYPE_CHECKING, Union
+from typing import Dict, NoReturn, TYPE_CHECKING, Union
 
 from django.conf import settings
+from django.db.utils import OperationalError
 from internal.migration_coordination import (
     build_migration_notify_resource_context,
     migration_notify_coordination,
 )
 from kessel.relations.v1beta1 import common_pb2
+from management.atomic_transactions import _is_serialization_or_deadlock
 
 if TYPE_CHECKING:
     from management.relation_replicator.types import RelationTuple
@@ -40,6 +42,19 @@ class DualWriteException(Exception):
     """DualWrite exception."""
 
     pass
+
+
+def raise_dual_write_exception(exc: BaseException) -> NoReturn:
+    """
+    Convert handler failures into DualWriteException, except retriable DB conflicts.
+
+    SerializationFailure / DeadlockDetected must propagate as OperationalError so
+    ``@atomic_with_retry`` / pgtransaction can retry the outer transaction. Wrapping
+    them as DualWriteException bypasses that retry filter and surfaces 500s to clients.
+    """
+    if isinstance(exc, OperationalError) and _is_serialization_or_deadlock(exc):
+        raise exc
+    raise DualWriteException(exc)
 
 
 class ReplicationEventType(str, Enum):

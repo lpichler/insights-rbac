@@ -31,11 +31,11 @@ from management.permission.scope_service import (
 )
 from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.relation_replicator.types import RelationTuple
 from management.role.model import BindingMapping, Role
@@ -94,7 +94,7 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
             )
         except Exception as e:
             logger.error(f"Initialization of RelationApiDualWriteGroupHandler failed: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _generate_member_relations(self):
         """Generate user-groups relations."""
@@ -171,7 +171,7 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
             )
         except Exception as e:
             logger.error(f"Replication event failed for group: {self.group.uuid}: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def generate_relations_reset_roles(
         self, roles: Iterable[Role], remove_default_access_from: Optional[TenantMapping] = None
