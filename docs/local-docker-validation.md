@@ -5,97 +5,44 @@ The commands use Podman when it is available, but Docker is also supported.
 
 ## Start the stack
 
-Start the current checkout:
+Select the source for each configurable service with `rbac=` and
+`rbac-config=`:
 
-```bash
-make docker-local-full-up local
-```
+| Source | Meaning |
+| --- | --- |
+| `local` | Current local checkout, including uncommitted changes |
+| `upstream` | Latest changes from the hard-coded upstream repository |
+| `<GitHub PR URL>` | Source fetched from the specified pull request |
+| `<commit SHA>` | Source fetched at the specified commit |
 
-Start an RBAC pull request in a temporary worktree:
+HBI and Kessel Inventory always use upstream sources for now. Their checkouts
+are maintained under `.local-deps/` and updated for each deployment. The
+hard-coded upstream repositories are
+[insights-rbac](https://github.com/project-kessel/insights-rbac),
+[rbac-config](https://github.com/project-kessel/rbac-config),
+[inventory-api](https://github.com/project-kessel/inventory-api), and
+[insights-host-inventory](https://github.com/RedHatInsights/insights-host-inventory).
 
-```bash
-make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/3309
-```
+| Scenario | Command |
+| --- | --- |
+| Local RBAC with upstream config | `make docker-local-full-up rbac=local rbac-config=upstream` |
+| Local RBAC and local config | `make docker-local-full-up rbac=local rbac-config=local` |
+| Latest upstream RBAC and config | `make docker-local-full-up rbac=upstream rbac-config=upstream` |
+| RBAC and config commits | `make docker-local-full-up rbac=<rbac-commit-sha> rbac-config=<config-commit-sha>` |
+| RBAC PR | `make docker-local-full-up rbac=<rbac-pr-url>` |
+| Config PR | `make docker-local-full-up rbac=local rbac-config=<config-pr-url>` |
+| RBAC PR and config PR | `make docker-local-full-up rbac=<rbac-pr-url> rbac-config=<config-pr-url>` |
 
-To use a local RBAC Config checkout, build its stage schema and attach it to
-the local stack automatically:
+For `rbac-config=local`, the sibling checkout at `../rbac-config` is used. The
+command compiles its stage schema with `ksl-test-schema-stage` before starting
+the stack.
 
-```bash
-make docker-local-full-up local \
-  rbac_config_repo=/absolute/path/to/rbac-config
-```
+### Running stack behavior
 
-### Rebuild running RBAC services
-
-When the full stack is already running, you can rebuild and restart only the
-RBAC services without tearing down the entire stack. This is faster than a
-full `docker-local-full-down` / `docker-local-full-up` cycle after code changes.
-
-Rebuild only RBAC (server, worker, scheduler, Kafka consumer):
-
-```bash
-make docker-local-full-up local rebuild=rbac
-```
-
-This rebuilds the local RBAC Docker image from the current checkout, runs
-migrations, and recreates the four RBAC services. Other services (SpiceDB,
-Relations API, Kafka, HBI) are left untouched.
-
-Rebuild RBAC together with a local `rbac-config` checkout:
-
-```bash
-make docker-local-full-up local rebuild=rbac,rbac-config \
-  rbac_config_repo=/absolute/path/to/rbac-config
-```
-
-This additionally compiles the local stage KSL schema from `rbac-config`,
-writes it into SpiceDB, refreshes Relations API, reseeds RBAC role
-definitions, and recreates the RBAC services. Use this mode when both RBAC
-code and KSL schema changes need to be tested together.
-
-The rebuild modes require the `local` deployment source and a running stack.
-If the stack is not running, start it first with `make docker-local-full-up local`.
-
-### Deployment source combinations
-
-The full-stack command can combine an RBAC checkout or pull request with an
-RBAC Config checkout or pull request:
-
-| RBAC source | RBAC Config source | Command |
-| --- | --- | --- |
-| Current local checkout | Default/stage config | `make docker-local-full-up local` |
-| RBAC GitHub PR | Default/stage config | `make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/3309` |
-| Current local RBAC | RBAC Config PR | `make docker-local-full-up local rbac_config_pr=https://github.com/project-kessel/rbac-config/pull/789` |
-| Current local RBAC | Current local `rbac-config` checkout | `make docker-local-full-up local rbac_config_repo=/absolute/path/to/rbac-config` |
-| RBAC GitHub PR | RBAC Config PR | `make docker-local-full-up pr=<rbac-pr-url> rbac_config_pr=<rbac-config-pr-url>` |
-| RBAC GitHub PR | Current local `rbac-config` checkout | `make docker-local-full-up pr=<rbac-pr-url> rbac_config_repo=/absolute/path/to/rbac-config` |
-| Rebuild running RBAC only | N/A | `make docker-local-full-up local rebuild=rbac` |
-| Rebuild running RBAC | Rebuild local `rbac-config` | `make docker-local-full-up local rebuild=rbac,rbac-config rbac_config_repo=/absolute/path/to/rbac-config` |
-
-For local changes in both repositories:
-
-```bash
-make docker-local-full-up local \
-  rbac_config_repo=/absolute/path/to/rbac-config
-```
-
-This automatically runs `make ksl-test-schema-stage` in `rbac-config`, loads
-the generated schema into local SpiceDB, refreshes Relations API, runs
-`rbac-migrate`, and restarts `rbac-server`, `rbac-worker`, `rbac-scheduler`,
-and `rbac-kafka-consumer`.
-
-When only `rbac-config` or its schema changes, rerun the same command. If RBAC
-source code also changed, perform a full rebuild first:
-
-```bash
-make docker-local-full-down
-make docker-local-full-up local \
-  rbac_config_repo=/absolute/path/to/rbac-config
-```
-
-When a config or schema option is supplied and the stack is already running,
-the command intentionally refreshes schema/config-related services without
-rebuilding the RBAC or HBI images.
+When the stack is already running, the command rebuilds and recreates the
+services affected by the selected sources and prints a deployment summary. A
+local RBAC and local config deployment rebuilds RBAC, refreshes the selected
+schema and role definitions, and rebuilds the upstream Kessel and HBI services.
 
 Wait until the RBAC API is available at `http://localhost:9080`.
 

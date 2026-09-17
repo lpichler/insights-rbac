@@ -58,25 +58,11 @@ Please use `make <target>` where <target> is one of:
   docker-grype				Run security checks on the project image(s)
 
 --- Commands using the local full Kessel stack ---
-  docker-local-full-up local
-                            build and start the current local RBAC checkout
-  docker-local-full-up local rebuild=rbac
-                            rebuild and recreate only local RBAC services
-  docker-local-full-up local rebuild=rbac,rbac-config rbac_config_repo=<path>
-                            rebuild KSL schema, refresh Kessel, reseed and recreate RBAC
-  docker-local-full-up pr=<GitHub-PR-URL>
-                            build and start an RBAC pull request in a temporary worktree
-  docker-local-full-up local rbac_config_pr=<GitHub-PR-URL>
-                            use the stage role definitions and schema from an RBAC Config PR
-                            on a running stack, refreshes only Relations API, rbac-migrate, and RBAC services
-  docker-local-full-up local rbac_config_repo=<path>
-                            build its stage KSL schema and use its local role definitions
-  docker-local-full-up pr=<RBAC-PR-URL> rbac_config_pr=<Config-PR-URL>
-                            test RBAC and RBAC Config pull requests together
-  docker-local-full-up local rbac_config_pr=<Config-PR-URL> schema_zed_file=<path>
-                            use a local generated schema with an RBAC Config PR
-  docker-local-full-up-latest
-                            update local dependencies, then build and start this checkout
+  docker-local-full-up rbac=<source> rbac-config=<source>
+                            build and start the selected RBAC sources
+                            source: local, upstream, a GitHub PR URL, or a commit SHA
+                            defaults: rbac=local, rbac-config=upstream
+                            HBI and Kessel Inventory use upstream sources
   docker-local-full-validate
                             run all scripts below scripts/validations/
   docker-local-full-down   stop the local full Kessel stack (keeps volumes)
@@ -333,30 +319,26 @@ docker-local-down:
 docker-local-logs:
 	docker compose -f docker-compose.local.yml logs -f
 
-PR_URL ?= $(pr)
-RBAC_CONFIG_PR_URL ?= $(rbac_config_pr)
-RBAC_CONFIG_REPO ?= $(rbac_config_repo)
-SCHEMA_ZED_FILE ?= $(schema_zed_file)
+RBAC_SOURCE ?= $(if $(strip $(rbac)),$(rbac),local)
+RBAC_CONFIG_SOURCE ?= $(if $(strip $(rbac-config)),$(rbac-config),upstream)
+
+LEGACY_FULL_STACK_VARS := $(strip $(pr)$(local)$(rebuild)$(rbac_config_pr)$(rbac_config_repo)$(schema_zed_file))
+LEGACY_FULL_STACK_GOALS := $(filter local pr,$(MAKECMDGOALS))
 
 docker-local-full-up:
-	RBAC_PR_URL="$(PR_URL)" RBAC_CONFIG_PR_URL="$(RBAC_CONFIG_PR_URL)" RBAC_CONFIG_REPO="$(RBAC_CONFIG_REPO)" SCHEMA_ZED_FILE="$(SCHEMA_ZED_FILE)" ./scripts/local_stack/up-full.sh $(if $(strip $(PR_URL)),pr,$(if $(filter pr,$(MAKECMDGOALS)),pr,local)) $(if $(strip $(rebuild)),--rebuild=$(rebuild),)
+	@if [ -n "$(LEGACY_FULL_STACK_VARS)$(LEGACY_FULL_STACK_GOALS)" ]; then \
+		echo "Legacy full-stack options are no longer supported; use rbac=<source> and rbac-config=<source>." >&2; \
+		exit 2; \
+	fi
+	RBAC_SOURCE="$(RBAC_SOURCE)" RBAC_CONFIG_SOURCE="$(RBAC_CONFIG_SOURCE)" ./scripts/local_stack/up-full.sh
 
-.PHONY: docker-local-full-up-latest
-docker-local-full-up-latest:
-	git pull --ff-only
-	./scripts/local_stack/up-full.sh --pull-dependencies local
-
+.PHONY: docker-local-full-up
 .PHONY: docker-local-full-validate
 docker-local-full-validate:
 	@set -e; for script in $$(find scripts/validations -type f -name '*.sh' | sort); do \
 		printf '\n==> %s\n' "$$script"; \
 		bash "$$script"; \
 	done
-
-# Allow `make docker-local-full-up pr=<github-pr-url>` and
-# `make docker-local-full-up local`.
-pr local:
-	@:
 
 docker-local-full-down:
 	./scripts/local_stack/down-full.sh

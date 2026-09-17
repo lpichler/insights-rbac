@@ -656,7 +656,7 @@ Prerequisites:
     ./scripts/validations/api/create-workspace-local.sh --no-start
 
   Option A2 (full Kessel + Debezium + RBAC + HBI):
-    make docker-local-full-up
+    make docker-local-full-up rbac=local rbac-config=upstream
     ./scripts/validations/api/create-workspace-local.sh --no-start --count 1
 
   Option B (stage Kessel via port-forward):

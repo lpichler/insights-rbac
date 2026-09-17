@@ -57,133 +57,57 @@ Start RBAC with Kessel Inventory, Kessel Relations, SpiceDB, Kafka, Debezium,
 and Host Inventory:
 
 ```bash
-make docker-local-full-up
+make docker-local-full-up rbac=local rbac-config=upstream
 ```
 
 The command builds `insights-rbac-local:dev`, uses Docker or Podman Compose,
-and discovers sibling `../inventory-api` and `../insights-host-inventory`
-checkouts. If either checkout is absent, it creates a shallow clone under
-`.local-deps/`. Ensure the container VM has enough memory for the full stack.
+and resolves the upstream Kessel Inventory and Host Inventory checkouts under
+`.local-deps/`. If either checkout is absent, it creates a shallow clone.
+Ensure the container VM has enough memory for the full stack.
 
-#### Local full-stack quick start
+#### Source selection
 
-The full-stack command uses the checked-out RBAC source and discovered
-`inventory-api` and `insights-host-inventory` sources. It discovers sibling
-checkouts first and otherwise uses clones under `.local-deps/`. It intentionally
-does not pull existing checkouts, so local work is never overwritten.
+Select the RBAC and `rbac-config` sources directly on the command line:
 
-##### Latest version of all repositories
+| Source | Meaning |
+| --- | --- |
+| `local` | Current local checkout, including uncommitted changes |
+| `upstream` | Latest changes from the hard-coded upstream repository |
+| `<GitHub PR URL>` | Source fetched from the specified pull request |
+| `<commit SHA>` | Source fetched at the specified commit |
 
-With each repository already on the branch you want to test, fast-forward all
-three checkouts, then build and deploy the current RBAC checkout:
+HBI and Kessel Inventory use upstream sources by default and are not selectable
+yet. Their checkouts are updated under `.local-deps/` for each deployment.
+The hard-coded upstream repositories are
+[insights-rbac](https://github.com/project-kessel/insights-rbac),
+[rbac-config](https://github.com/project-kessel/rbac-config),
+[inventory-api](https://github.com/project-kessel/inventory-api), and
+[insights-host-inventory](https://github.com/RedHatInsights/insights-host-inventory).
 
-```bash
-make docker-local-full-up-latest
-```
-
-The command resolves sibling repositories or the automatically cloned
-`.local-deps/` copies, fast-forwards them sequentially, initializes HBI
-submodules, and then starts the stack. Processing stops at the first
-fast-forward failure (for example because a checkout has local commits or
-conflicts), but repositories updated earlier in the sequence will already
-have been fast-forwarded.
-
-##### Current local RBAC changes
-
-Build and deploy the current RBAC checkout, including uncommitted changes:
+Examples:
 
 ```bash
-make docker-local-full-up local
-```
-
-##### Rebuild running RBAC services
-
-When the full stack is already running, rebuild only the RBAC services without
-tearing down the entire stack:
-
-```bash
-make docker-local-full-up local rebuild=rbac
-```
-
-This rebuilds the local RBAC Docker image, runs migrations, and recreates the
-RBAC server, worker, scheduler, and Kafka consumer. Other services remain
-untouched.
-
-To also rebuild a local `rbac-config` checkout (compile KSL schema, refresh
-SpiceDB and Relations API, reseed role definitions):
-
-```bash
-make docker-local-full-up local rebuild=rbac,rbac-config \
-  rbac_config_repo="$(cd ../rbac-config && pwd)"
-```
-
-##### An RBAC pull request
-
-To test a pull request without checking out its branch, pass its complete
-GitHub PR URL as the `pr` make variable:
-
-```bash
-make docker-local-full-up pr=https://github.com/project-kessel/insights-rbac/pull/3309
-```
-
-The PR command fetches the PR head into a temporary Git worktree, builds an
-`insights-rbac-pr-<number>:dev` image, and starts the integrated stack with
-that image. A normal build forces recreation of the full-Kessel Compose
-services, so the server, migrations, worker, scheduler, and Kafka consumer
-all use the new code. The temporary worktree is removed after startup; the
-locally built image and Compose volumes remain available for testing.
-
-##### An RBAC Config pull request, local checkout, or generated KSL schema
-
-The full stack uses the **stage** configuration by default: the stage role
-ConfigMap and the stage `schema.zed` from `project-kessel/rbac-config`.
-To test an RBAC Config PR with an RBAC PR (or with local RBAC code), pass its
-complete URL using `rbac_config_pr`:
-
-```bash
+make docker-local-full-up rbac=local rbac-config=upstream
+make docker-local-full-up rbac=upstream rbac-config=upstream
+make docker-local-full-up rbac=<rbac-commit-sha> rbac-config=<config-commit-sha>
 make docker-local-full-up \
-  pr=https://github.com/project-kessel/insights-rbac/pull/3309 \
-  rbac_config_pr=https://github.com/project-kessel/rbac-config/pull/123
+  rbac=https://github.com/project-kessel/insights-rbac/pull/3309 \
+  rbac-config=https://github.com/project-kessel/rbac-config/pull/123
 ```
 
-That selects the PR's stage `_private/configmaps/stage/rbac-config.yml` and
-its generated `configs/stage/schemas/schema.zed`. The files are copied or
-downloaded into Inventory API's local full-Kessel configuration before the
-Relations API starts.
-
-To test changes in a local `rbac-config` checkout instead, use
-`rbac_config_repo`. It uses the checkout's stage ConfigMap and automatically
-runs its non-destructive `ksl-test-schema-stage` target, then loads the
-generated stage schema:
+For `rbac-config=local`, the sibling checkout at `../rbac-config` is used. It
+must contain the stage ConfigMap; the command compiles its stage KSL schema
+with `ksl-test-schema-stage` before starting the stack.
 
 ```bash
-make docker-local-full-up local rbac_config_repo="$(cd ../rbac-config && pwd)"
+make docker-local-full-up rbac=local rbac-config=local
 ```
 
-When the local full stack is already running, this command does **not** rebuild
-the local RBAC image or Host Inventory and does not recreate the full stack.
-It refreshes only Relations API (to load the schema), runs `rbac-migrate` (to
-reseed the role definitions), and restarts `rbac-server`, `rbac-worker`,
-`rbac-scheduler`, and `rbac-kafka-consumer`. On a first launch,
-it performs the normal full build and startup because the local image and
-dependencies do not exist yet.
-
-During a refresh, the selected schema is also written directly to SpiceDB
-before those services restart, so KSL changes take effect immediately.
-
-By default, this is enough for uncommitted KSL changes. To use a separately
-generated schema file instead, provide `schema_zed_file`:
-
-```bash
-make docker-local-full-up local \
-  rbac_config_repo="$(cd ../rbac-config && pwd)" \
-  schema_zed_file="$(cd ../rbac-config && pwd)/_private/test-schema/stage-schema.zed"
-```
-
-`schema_zed_file` takes precedence only for the SpiceDB schema; the role
-definitions still come from the selected RBAC Config PR or checkout. The
-automatic local build uses the safe `ksl-test-schema-stage` target, which writes
-under `_private/` rather than replacing the committed `schema.zed`.
+If the Docker stack is already running, the command rebuilds and recreates the
+services affected by the selected sources and prints a deployment summary.
+For example, rerunning the local command rebuilds RBAC, refreshes the selected
+`rbac-config` schema and role definitions, and rebuilds the upstream Kessel and
+HBI services.
 
 ##### Run the basic V2 API validation
 
@@ -255,18 +179,6 @@ Useful endpoints after startup:
 | Kessel Inventory API | http://localhost:9081 |
 | Kafka Connect | http://localhost:8083 |
 | Host Inventory API | http://localhost:8080 |
-
-For an existing image, skip the RBAC build:
-
-```bash
-RBAC_IMAGE=<existing-image-tag> ./scripts/local_stack/up-full.sh --no-build
-```
-
-To start only Kessel, Debezium, and RBAC, omit Host Inventory:
-
-```bash
-./scripts/local_stack/up-full.sh --no-hbi
-```
 
 Verify a workspace create, the RBAC Read-Your-Writes notification, and that
 the workspace is visible through Kessel Inventory, which Host Inventory uses

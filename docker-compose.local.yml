@@ -1,7 +1,7 @@
 # RBAC-only local stack: Postgres + Redis + Kafka + Debezium + mock Kessel + API + consumer.
 #
 # For real Kessel + Debezium + RBAC + Host Inventory, use the full integration stack:
-#   make docker-local-full-up
+#   make docker-local-full-up rbac=local rbac-config=upstream
 #
 # Start this RBAC-only stack:
 #   make docker-local-up

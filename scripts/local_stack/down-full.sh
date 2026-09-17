@@ -11,8 +11,8 @@ source "${SCRIPT_DIR}/../common/container_runtime.sh"
 
 detect_container_runtime
 
-INVENTORY_API_REPO="${INVENTORY_API_REPO:-${KESSEL_REPO:-}}"
-HBI_REPO="${HBI_REPO:-}"
+INVENTORY_API_REPO="${REPO_ROOT}/.local-deps/inventory-api"
+HBI_REPO="${REPO_ROOT}/.local-deps/insights-host-inventory"
 HBI_COMPOSE_PROJECT="${HBI_COMPOSE_PROJECT:-hbi-kessel-local}"
 REMOVE_VOLUMES=false
 
@@ -36,20 +36,6 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-
-if [[ -z "${INVENTORY_API_REPO}" || ! -f "${INVENTORY_API_REPO}/scripts/stop-full-kessel.sh" ]]; then
-  INVENTORY_API_REPO="$(dirname "${REPO_ROOT}")/inventory-api"
-fi
-if [[ ! -f "${INVENTORY_API_REPO}/scripts/stop-full-kessel.sh" ]]; then
-  INVENTORY_API_REPO="${REPO_ROOT}/.local-deps/inventory-api"
-fi
-
-if [[ -z "${HBI_REPO}" || ! -f "${HBI_REPO}/dev.yml" ]]; then
-  HBI_REPO="$(dirname "${REPO_ROOT}")/insights-host-inventory"
-fi
-if [[ ! -f "${HBI_REPO}/dev.yml" ]]; then
-  HBI_REPO="${REPO_ROOT}/.local-deps/insights-host-inventory"
-fi
 
 down_compose() {
   if [[ "${REMOVE_VOLUMES}" == true ]]; then
