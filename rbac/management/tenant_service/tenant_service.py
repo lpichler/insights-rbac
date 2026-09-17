@@ -1,7 +1,7 @@
 """Common objects for tenant services."""
 
 import logging
-from typing import NamedTuple, Optional, Protocol, TypeGuard
+from typing import NamedTuple, Optional, Protocol
 
 from django.db import IntegrityError
 from management.atomic_transactions import atomic
@@ -23,12 +23,15 @@ from api.models import Tenant, User
 logger = logging.getLogger(__name__)
 
 
-def _is_missing_user_id(user_id: Optional[str]) -> bool:
-    return user_id is None or user_id == ""
+def _normalize_user_id(user_id) -> Optional[str]:
+    """Normalize BOP/identity user_id values to the string form stored on Principal."""
+    if user_id is None or user_id == "":
+        return None
+    return str(user_id)
 
 
-def _has_user_id(user_id: Optional[str]) -> TypeGuard[str]:
-    return user_id is not None and user_id != ""
+def _is_missing_user_id(user_id) -> bool:
+    return _normalize_user_id(user_id) is None
 
 
 def _transfer_role_binding_entries(obsolete: Principal, survivor: Principal) -> None:
@@ -167,16 +170,20 @@ def _resolve_user_id_conflict(
     user_id: str,
     replicator: RelationReplicator,
 ) -> None:
-    obsolete = Principal.objects.filter(user_id=user_id).exclude(pk=survivor.pk).first()
+    normalized_user_id = _normalize_user_id(user_id)
+    if normalized_user_id is None:
+        raise ValueError(f"Cannot resolve user_id conflict without user_id. survivor_id={survivor.pk}")
+
+    obsolete = Principal.objects.filter(user_id=normalized_user_id).exclude(pk=survivor.pk).first()
     if obsolete is None:
         survivor.refresh_from_db()
-        if survivor.user_id == user_id:
+        if survivor.user_id == normalized_user_id:
             return
         raise RuntimeError(
-            f"user_id={user_id} conflict but no owner found and survivor does not have it. "
+            f"user_id={normalized_user_id} conflict but no owner found and survivor does not have it. "
             f"survivor_id={survivor.pk} survivor_username={survivor.username}"
         )
-    merge_obsolete_principal_into_survivor(survivor, obsolete, user_id=user_id, replicator=replicator)
+    merge_obsolete_principal_into_survivor(survivor, obsolete, user_id=normalized_user_id, replicator=replicator)
 
 
 def _ensure_principal_with_user_id_in_tenant(
@@ -189,19 +196,21 @@ def _ensure_principal_with_user_id_in_tenant(
     created = False
     principal = None
 
+    user_id = _normalize_user_id(user.user_id)
+
     if upsert:
         try:
-            defaults = {"user_id": user.user_id} if _has_user_id(user.user_id) else {}
+            defaults = {"user_id": user_id} if user_id is not None else {}
             principal, created = Principal.objects.get_or_create(
                 username=user.username,
                 tenant=tenant,
                 defaults=defaults,
             )
         except IntegrityError:
-            if not _has_user_id(user.user_id):
+            if user_id is None:
                 raise
             survivor, _ = Principal.objects.get_or_create(username=user.username, tenant=tenant)
-            _resolve_user_id_conflict(survivor, user.user_id, replicator)
+            _resolve_user_id_conflict(survivor, user_id, replicator)
             return
     else:
         try:
@@ -216,29 +225,29 @@ def _ensure_principal_with_user_id_in_tenant(
     if created or principal is None:
         return
 
-    if not _has_user_id(user.user_id):
+    if user_id is None:
         return
 
-    if principal.user_id == user.user_id:
+    if principal.user_id == user_id:
         return
 
     if not _is_missing_user_id(principal.user_id):
         raise RuntimeError(
             f"Principal user_id does not match BOP user_id. "
             f"username={principal.username} principal_user_id={principal.user_id} "
-            f"bop_user_id={user.user_id} org_id={tenant.org_id}"
+            f"bop_user_id={user_id} org_id={tenant.org_id}"
         )
 
-    obsolete = Principal.objects.filter(user_id=user.user_id, tenant=tenant).exclude(pk=principal.pk).first()
+    obsolete = Principal.objects.filter(user_id=user_id, tenant=tenant).exclude(pk=principal.pk).first()
     if obsolete is not None:
-        merge_obsolete_principal_into_survivor(principal, obsolete, user_id=user.user_id, replicator=replicator)
+        merge_obsolete_principal_into_survivor(principal, obsolete, user_id=user_id, replicator=replicator)
         return
 
-    principal.user_id = user.user_id
+    principal.user_id = user_id
     try:
         principal.save()
     except IntegrityError:
-        _resolve_user_id_conflict(principal, user.user_id, replicator)
+        _resolve_user_id_conflict(principal, user_id, replicator)
 
 
 class BootstrappedTenant(NamedTuple):
