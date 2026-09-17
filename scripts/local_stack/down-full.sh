@@ -11,8 +11,8 @@ source "${SCRIPT_DIR}/../common/container_runtime.sh"
 
 detect_container_runtime
 
-INVENTORY_API_REPO="${REPO_ROOT}/.local-deps/inventory-api"
-HBI_REPO="${REPO_ROOT}/.local-deps/insights-host-inventory"
+INVENTORY_API_REPO="${INVENTORY_API_REPO:-${REPO_ROOT}/.local-deps/inventory-api}"
+HBI_REPO="${HBI_REPO:-${REPO_ROOT}/.local-deps/insights-host-inventory}"
 HBI_COMPOSE_PROJECT="${HBI_COMPOSE_PROJECT:-hbi-kessel-local}"
 LEGACY_COMPOSE_PROJECT="${LEGACY_COMPOSE_PROJECT:-insights-rbac}"
 REMOVE_VOLUMES=false

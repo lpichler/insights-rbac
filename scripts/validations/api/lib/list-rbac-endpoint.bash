@@ -90,7 +90,7 @@ list_rbac_endpoint() {
   response_file=$(mktemp "${TMPDIR:-/tmp}/rbac-list-endpoint.XXXXXX")
   trap 'rm -f "$response_file"' RETURN
 
-  status=$(curl -sS -o "$response_file" -w '%{http_code}' -X "$method" \
+  status=$(curl -sS --connect-timeout 5 --max-time 30 -o "$response_file" -w '%{http_code}' -X "$method" \
     -H "x-rh-identity: $identity_header" \
     "${LIST_API_URL}${LIST_API_PREFIX}${path}")
   if [[ "$status" != 200 ]]; then

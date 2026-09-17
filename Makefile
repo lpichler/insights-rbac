@@ -326,8 +326,14 @@ docker-local-down:
 docker-local-logs:
 	docker compose -f docker-compose.local.yml logs -f
 
-RBAC_SOURCE ?= $(if $(strip $(rbac)),$(rbac),local)
-RBAC_CONFIG_SOURCE ?= $(if $(strip $(rbac-config)),$(rbac-config),upstream)
+RBAC_SOURCE ?= local
+RBAC_CONFIG_SOURCE ?= upstream
+ifneq ($(strip $(rbac)),)
+override RBAC_SOURCE := $(rbac)
+endif
+ifneq ($(strip $(rbac-config)),)
+override RBAC_CONFIG_SOURCE := $(rbac-config)
+endif
 
 LEGACY_FULL_STACK_VARS := $(strip $(pr)$(local)$(rebuild)$(rbac_config_pr)$(rbac_config_repo)$(schema_zed_file))
 LEGACY_FULL_STACK_GOALS := $(filter local pr,$(MAKECMDGOALS))

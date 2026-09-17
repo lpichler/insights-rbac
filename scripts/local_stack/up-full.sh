@@ -271,16 +271,15 @@ start_rbac_worktree() {
 select_rbac_config_pr() {
   [[ -n "${RBAC_CONFIG_PR_URL}" ]] || return 0
 
-  local repository pr_number raw_base
-  if [[ "${RBAC_CONFIG_PR_URL}" =~ ^https://github\.com/([^/]+/[^/]+)/pull/([0-9]+)(/.*)?$ ]]; then
-    repository="${BASH_REMATCH[1]}"
-    pr_number="${BASH_REMATCH[2]}"
+  local pr_number raw_base
+  if [[ "${RBAC_CONFIG_PR_URL}" =~ ^https://github\.com/project-kessel/rbac-config/pull/([0-9]+)(/.*)?$ ]]; then
+    pr_number="${BASH_REMATCH[1]}"
   else
-    log-err "RBAC_CONFIG_PR_URL must be a GitHub pull request URL: ${RBAC_CONFIG_PR_URL}"
+    log-err "rbac-config PR URL must point to project-kessel/rbac-config: ${RBAC_CONFIG_PR_URL}"
     exit 1
   fi
 
-  raw_base="https://raw.githubusercontent.com/${repository}/refs/pull/${pr_number}/head"
+  raw_base="https://raw.githubusercontent.com/project-kessel/rbac-config/refs/pull/${pr_number}/head"
   export RBAC_CONFIG_URL="${raw_base}/_private/configmaps/stage/rbac-config.yml"
 
   # A local generated schema is more specific than the schema committed by the PR.
@@ -344,10 +343,10 @@ select_rbac_source() {
     https://github.com/*/pull/[0-9]*|https://github.com/*/pull/[0-9]*/*)
       RBAC_SOURCE_KIND=pr
       RBAC_PR_URL="${RBAC_SOURCE}"
-      if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/[^/]+/[^/]+/pull/([0-9]+)(/.*)?$ ]]; then
+      if [[ "${RBAC_PR_URL}" =~ ^https://github\.com/project-kessel/insights-rbac/pull/([0-9]+)(/.*)?$ ]]; then
         RBAC_PR_NUMBER="${BASH_REMATCH[1]}"
       else
-        log-err "RBAC source must be local, upstream, or a GitHub pull request URL: ${RBAC_SOURCE}"
+        log-err "RBAC PR URL must point to project-kessel/insights-rbac: ${RBAC_SOURCE}"
         exit 1
       fi
       RBAC_IMAGE="${RBAC_IMAGE:-insights-rbac-pr-${RBAC_PR_NUMBER}:dev}"
