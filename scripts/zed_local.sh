@@ -2,7 +2,7 @@
 # =============================================================================
 # zed_local.sh — Zed CLI for local Docker + stage Kessel SpiceDB
 #
-# Pairs with scripts/validations/api/create-workspace-local.sh. Zed talks to SpiceDB (gRPC on
+# Pairs with scripts/validations/api/create-workspace.sh. Zed talks to SpiceDB (gRPC on
 # localhost:50051), not the Relations API (localhost:9000). Both port-forwards
 # target the same stage cluster.
 #
@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-PIDS_DIR="$SCRIPT_DIR/.create_workspace_local_pids"
+PIDS_DIR="$SCRIPT_DIR/.create_workspace_pids"
 CONFIG_FILE="$PROJECT_DIR/.cursor/skills/config.env"
 
 ZED_CONTEXT_NAME="${ZED_CONTEXT_NAME:-kessel-local}"
@@ -323,7 +323,7 @@ Commands:
   status             Show port, credential, and port-forward status
   schema             Print the schema loaded by SpiceDB
   read-workspace ID  zed relationship read rbac/workspace:ID
-  verify-results F   Verify workspaces from create_workspace_local JSON results
+  verify-results F   Verify workspaces from create-workspace JSON results
   check ARGS...      zed permission check ARGS (with local context)
   help               Show this help
 
@@ -338,7 +338,7 @@ Environment:
   OC_PROJECT            OpenShift project (default: kessel-stage)
 
 Used with:
-  ./scripts/validations/api/create-workspace-local.sh --zed
+  ./scripts/validations/api/create-workspace.sh --zed
 
 When full-kessel is running locally, the token is read automatically from its
 .env file. No Vault setup is required.
