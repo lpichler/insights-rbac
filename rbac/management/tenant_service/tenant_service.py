@@ -4,7 +4,6 @@ import logging
 from typing import NamedTuple, Optional, Protocol, TypeGuard
 
 from django.db import IntegrityError
-
 from management.group.model import Group
 from management.inventory_replicator.inventory_replicator import InventoryReplicator, PartitionKey, ReplicationEvent
 from management.inventory_replicator.inventory_replicator import ReplicationEventType
