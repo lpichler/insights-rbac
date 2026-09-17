@@ -4,9 +4,14 @@ import logging
 from typing import NamedTuple, Optional, Protocol, TypeGuard
 
 from django.db import IntegrityError
+from management.atomic_transactions import atomic
 from management.group.model import Group
-from management.inventory_replicator.inventory_replicator import InventoryReplicator, PartitionKey, ReplicationEvent
-from management.inventory_replicator.inventory_replicator import ReplicationEventType
+from management.inventory_replicator.inventory_replicator import (
+    InventoryReplicator,
+    PartitionKey,
+    ReplicationEvent,
+    ReplicationEventType,
+)
 from management.principal.model import Principal
 from management.role_binding.model import RoleBinding, RoleBindingPrincipal
 from management.tenant_mapping.model import TenantMapping
@@ -96,6 +101,7 @@ def _assign_user_id_and_replicate_merge(
         )
 
 
+@atomic
 def merge_obsolete_principal_into_survivor(
     survivor: Principal,
     obsolete: Principal,

@@ -31,6 +31,10 @@ from django.conf import settings
 from django.db import connection, transaction
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
+from management.atomic_transactions import (
+    atomic_block,
+    run_nested_transaction_retries,
+)
 from management.principal.model import Principal
 from management.principal.proxy import PrincipalProxy, external_principal_to_user
 from management.relation_replicator.outbox_replicator import OutboxReplicator
@@ -338,7 +342,7 @@ def process_umb_event(frame, umb_client: Stomp, bootstrap_service: TenantBootstr
 
     If the process should continue to listen for more frames, return True. Otherwise, return False.
     """
-    with transaction.atomic():
+    with atomic_block():
         # This is locked per transaction to ensure another listener process does not run concurrently.
         if not _lock_listener():
             # If there is another listener, let it run and abort this one.
@@ -355,7 +359,7 @@ def process_umb_event(frame, umb_client: Stomp, bootstrap_service: TenantBootstr
             # If the setting is enabled, process all users.
             if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB:
                 # If Tenant is not already ready, don't ready it
-                bootstrap_service.update_user(user, ready_tenant=False)
+                run_nested_transaction_retries(5, lambda: bootstrap_service.update_user(user, ready_tenant=False))
             umb_client.ack(frame)
             stomp_messages_ack_total.inc()
         except Exception as e:
@@ -404,7 +408,7 @@ def process_kafka_message(
         - should_continue: False if another listener is running (lock contention), True otherwise
         - success: True if message was processed successfully, False if it failed
     """
-    with transaction.atomic():
+    with atomic_block():
         # This is locked per transaction to ensure another listener process does not run concurrently.
         if not _lock_listener():
             # If there is another listener, let it run and abort this one.
@@ -471,7 +475,7 @@ def process_kafka_message(
                 # If the setting is enabled, process all users.
                 if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA:
                     # If Tenant is not already ready, don't ready it
-                    bootstrap_service.update_user(user, ready_tenant=False)
+                    run_nested_transaction_retries(5, lambda: bootstrap_service.update_user(user, ready_tenant=False))
 
                 kafka_messages_success_total.inc()
                 return MessageProcessingResult(should_continue=True, success=True)

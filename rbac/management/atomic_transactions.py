@@ -17,10 +17,12 @@
 """Decorators for v2 services."""
 
 import functools
+from collections.abc import Callable
 
 import pgtransaction
 from django.conf import settings
 from django.db import transaction
+from django.db.utils import DatabaseError
 
 # Shared isolation level configuration
 ISOLATION_LEVEL = pgtransaction.SERIALIZABLE
@@ -28,7 +30,7 @@ ISOLATION_LEVEL = pgtransaction.SERIALIZABLE
 
 def is_atomic_disabled():
     """Check if atomic transactions should be disabled (for tests)."""
-    return getattr(settings, "ATOMIC_RETRY_DISABLED", False)
+    return settings.ATOMIC_RETRY_DISABLED
 
 
 def atomic(func):
@@ -60,6 +62,37 @@ def atomic_with_retry(retries: int):
         return wrapper
 
     return decorator
+
+
+def run_atomic_with_retry[T](retries: int, callable: Callable[[], T]) -> T:  # noqa: D103
+    """Run the provided function in a SERIALIZABLE transaction with the provided number of retries."""
+
+    @atomic_with_retry(retries=retries)
+    def wrapped():  # noqa: D103
+        return callable()
+
+    return wrapped()
+
+
+def run_nested_transaction_retries[T](retries: int, callable: Callable[[], T]):  # noqa: D103
+    """
+    Run the provided function in a nested transaction with the provided number of retries.
+
+    This works even if it is run in an outer transaction.
+    """
+    if retries < 1:
+        raise ValueError("Must attempt at least 1")
+
+    last_exception = None
+
+    for i in range(retries):
+        try:
+            with transaction.atomic():
+                return callable()
+        except DatabaseError as e:
+            last_exception = e
+
+    raise last_exception
 
 
 def atomic_block():
