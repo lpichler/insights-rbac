@@ -23,6 +23,7 @@ from migration_tool.in_memory_tuples import (
     subject,
 )
 from tests.identity_request import IdentityRequest
+from tests.v2_util import bootstrap_tenant_for_v2_test
 
 
 class _ReplicationTracker:
@@ -40,6 +41,10 @@ class _ReplicationTracker:
 @override_settings(ATOMIC_RETRY_DISABLED=True)
 class MergePrincipalTests(IdentityRequest):
     """Tests for obsolete-into-survivor principal merge."""
+
+    def setUp(self):
+        super().setUp()
+        bootstrap_tenant_for_v2_test(self.tenant)
 
     def test_merge_keeps_survivor_group_membership_and_assigns_user_id(self):
         """Survivor (no user_id) keeps its groups and receives user_id; obsolete is deleted."""
