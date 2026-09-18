@@ -56,8 +56,11 @@ app.conf.beat_schedule = {
     },
 }
 
-# Schedule principal cleanup via Kafka if enabled, otherwise fall back to 7-day sweep.
-if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
+# Schedule principal cleanup via Kafka only when it is enabled AND a topic is configured;
+# otherwise fall back to the 7-day sweep. Without the topic check, the 60s task would fire
+# with no topic to consume, log an error every minute (see cleaner.py), and leave the 7-day
+# backstop unscheduled.
+if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED and settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC:
     app.conf.beat_schedule["principal-cleanup-every-minute"] = {
         "task": "management.tasks.principal_cleanup_via_kafka",
         "schedule": 60,  # Every 60 seconds
