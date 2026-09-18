@@ -4457,7 +4457,7 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
         )
 
 
-@override_settings(REPLICATION_TO_RELATION_ENABLED=False)
+@override_settings(REPLICATION_TO_RELATION_ENABLED=False, PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
 class GroupPrincipalV2SyncTests(IdentityRequest):
     """Test that adding principals to a group syncs TenantMapping membership via update_user."""
 
