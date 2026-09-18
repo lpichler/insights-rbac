@@ -23,13 +23,13 @@ from typing import Iterable, Optional
 from management.atomic_transactions import atomic
 from management.group.inventory_api_dual_write_subject_handler import InventoryApiDualWriteSubjectHandler
 from management.inventory_replicator.inventory_replicator import (
-    DualWriteException,
     InventoryReplicator,
     PartitionKey,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEvent,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.models import Workspace
 from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
@@ -98,7 +98,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
                 f"{self.cross_account_request.request_id}"
             )
 
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -134,7 +134,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
             )
         except Exception as e:
             logger.error("Error occurred in cross account replicate event %s", e, exc_info=True)
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replicate(self):
         """Replicate generated relations."""

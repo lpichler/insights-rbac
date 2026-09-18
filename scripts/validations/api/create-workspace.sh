@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# create_workspace_local.sh — Full workspace create + Read-Your-Writes (RYW) test
+# create-workspace.sh — Full workspace create + Read-Your-Writes (RYW) test
 #
 # Ensures local Docker infrastructure is running, wires RBAC to a *real* Kessel
 # Relations API (not the mock server), then creates workspace(s) via the v2 API
@@ -19,10 +19,11 @@
 #
 # Usage:
 #   make docker-local-up          # preferred: all services in Docker
-#   ./scripts/validations/api/create-workspace-local.sh
-#   ./scripts/validations/api/create-workspace-local.sh --count 1
-#   ./scripts/validations/api/create-workspace-local.sh --no-start    # stack already up
-#   ./scripts/validations/api/create-workspace-local.sh --help
+#   ./scripts/validations/api/create-workspace.sh
+#   ./scripts/validations/api/create-workspace.sh --count 1
+#   ./scripts/validations/api/create-workspace.sh --no-start    # stack already up
+#   ./scripts/validations/api/create-workspace.sh --user local-v2-non-admin
+#   ./scripts/validations/api/create-workspace.sh --help
 # =============================================================================
 
 set -euo pipefail
@@ -30,8 +31,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RYW_TEST_DIR="$PROJECT_DIR/scripts/local_ryw_test"
-PIDS_DIR="$PROJECT_DIR/scripts/.create_workspace_local_pids"
-LOG_DIR="$PROJECT_DIR/scripts/.create_workspace_local_logs"
+PIDS_DIR="$PROJECT_DIR/scripts/.create_workspace_pids"
+LOG_DIR="$PROJECT_DIR/scripts/.create_workspace_logs"
 
 # Defaults (override via environment)
 API_URL="${API_URL:-http://localhost:9080}"
@@ -49,6 +50,7 @@ KESSEL_ADDR_HOST="${KESSEL_HOST}:${KESSEL_PORT}"
 KESSEL_ADDR_CONTAINER="${KESSEL_ADDR_CONTAINER:-host.docker.internal:${KESSEL_PORT}}"
 WORKSPACE_COUNT="${WORKSPACE_COUNT:-1}"
 READ_YOUR_WRITES_TIMEOUT_SECONDS="${READ_YOUR_WRITES_TIMEOUT_SECONDS:-30}"
+RYW_USER="${RYW_USER:-local-v2-org-admin}"
 NO_START=false
 RUN_LISTEN=false
 
@@ -131,7 +133,48 @@ is_container_running() {
 }
 
 is_full_kessel_stack_running() {
-    $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-server-'
+    if $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-server-'; then
+        return 0
+    fi
+    curl -sf "http://localhost:${API_PORT}/metrics" >/dev/null 2>&1
+}
+
+is_full_kessel_database_running() {
+    $CONTAINER_RUNTIME ps --format '{{.Names}}' | grep -qE '^full-kessel-rbac-database-'
+}
+
+resolve_ryw_user() {
+    local user_id is_org_admin
+    case "$RYW_USER" in
+        local-v1-org-admin)
+            user_id=local-v1-org-admin-10001
+            is_org_admin=true
+            ;;
+        local-v1-non-org-admin)
+            user_id=local-v1-non-org-admin-10001
+            is_org_admin=false
+            ;;
+        local-v2-org-admin)
+            user_id=local-v2-org-admin-10001
+            is_org_admin=true
+            ;;
+        local-v2-non-admin)
+            user_id=local-v2-non-admin-10001
+            is_org_admin=false
+            ;;
+        *)
+            log-err "Unknown user '${RYW_USER}'. Choose one of the four default full-stack users."
+            exit 1
+            ;;
+    esac
+
+    RYW_ORG_ID="${RYW_ORG_ID:-local-full-stack}"
+    RYW_ACCOUNT_ID="${RYW_ACCOUNT_ID:-10001}"
+    RYW_USERNAME="${RYW_USERNAME:-${RYW_USER}}"
+    RYW_USER_ID="${RYW_USER_ID:-${user_id}}"
+    RYW_IS_ORG_ADMIN="${RYW_IS_ORG_ADMIN:-${is_org_admin}}"
+    export RYW_ORG_ID RYW_ACCOUNT_ID RYW_USERNAME RYW_USER_ID RYW_IS_ORG_ADMIN
+    log-info "Using RYW user=${RYW_USERNAME} user_id=${RYW_USER_ID} org=${RYW_ORG_ID} org_admin=${RYW_IS_ORG_ADMIN}"
 }
 
 is_hbi_stack_running() {
@@ -633,6 +676,7 @@ Options:
   --check-hbi     Request HBI verification (currently informational; RYW only)
   --no-check-hbi  Skip the informational HBI check request
   --no-start      Skip Docker bootstrap (assume services already running)
+  --user USER     Use one of the default full-stack users (default: local-v2-org-admin)
   --help          Show this help
 
 Environment:
@@ -653,11 +697,11 @@ Environment:
 Prerequisites:
   Option A (all-in-docker, recommended):
     make docker-local-up
-    ./scripts/validations/api/create-workspace-local.sh --no-start
+    ./scripts/validations/api/create-workspace.sh --no-start
 
   Option A2 (full Kessel + Debezium + RBAC + HBI):
-    make docker-local-full-up
-    ./scripts/validations/api/create-workspace-local.sh --no-start --count 1
+    make docker-local-full-up rbac=local rbac-config=upstream
+    ./scripts/validations/api/create-workspace.sh --no-start --count 1
 
   Option B (stage Kessel via port-forward):
     ./scripts/zed_local.sh ensure-forwards
@@ -703,6 +747,11 @@ parse_args() {
                 NO_START=true
                 shift
                 ;;
+            --user)
+                [[ $# -ge 2 ]] || { log-err "--user requires a value"; exit 1; }
+                RYW_USER="$2"
+                shift 2
+                ;;
             --help|-h)
                 show_help
                 exit 0
@@ -729,11 +778,15 @@ main() {
 
     detect_runtime
     detect_python
+    resolve_ryw_user
     resolve_check_hbi
     mkdir -p "$LOG_DIR" "$PIDS_DIR"
 
     if [ "$NO_START" = false ] && is_full_kessel_stack_running; then
         log-info "Full Kessel local stack already running — reusing it instead of bootstrapping standalone RBAC services"
+        NO_START=true
+    elif [ "$NO_START" = false ] && is_full_kessel_database_running; then
+        log-info "Full Kessel database detected — waiting for the full stack instead of starting legacy rbac_db"
         NO_START=true
     fi
 

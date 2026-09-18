@@ -40,9 +40,7 @@ write_spicedb_schema() {
     exit 1
   }
 
-  # Relations API reads this file but does not reliably write it into SpiceDB
-  # during startup. Apply it directly before dependent services are restarted.
-  log-info 'Applying schema directly to SpiceDB...'
+  log-info 'Applying selected schema directly to SpiceDB...'
   "${CONTAINER_RUNTIME}" run --rm --network kessel \
     -e "ZED_TOKEN=${spicedb_token}" \
     -e ZED_ENDPOINT=spicedb:50051 \
@@ -51,32 +49,11 @@ write_spicedb_schema() {
     docker.io/authzed/zed:latest schema write /schema.zed
 }
 
-if [[ "${RBAC_CONFIG_REFRESH:-false}" == true ]]; then
-  # schema.zed is mounted only by Relations API. Role definitions are consumed
-  # by rbac-migrate during seeding and mounted by rbac-server. Everything else
-  # continues running with the unchanged image and dependencies.
+if [[ "${STACK_WAS_RUNNING:-false}" == true ]]; then
   write_spicedb_schema
-  log-info 'Restarting Relations API, reseeding RBAC roles, and restarting RBAC server...'
-  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
-    --profile relations --profile consumer --profile rbac \
-    -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE_FILE}" \
-    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps relations-api
-  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
-    --profile relations --profile consumer --profile rbac \
-    -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE_FILE}" \
-    up --pull "${COMPOSE_PULL_MODE}" --force-recreate --no-deps rbac-migrate
-  "${COMPOSE_CMD[@]}" --env-file "${ENV_FILE}" \
-    --profile relations --profile consumer --profile rbac \
-    -f "${COMPOSE_DIR}/docker-compose.yaml" \
-    -f "${RBAC_OVERRIDE_FILE}" \
-    up --pull "${COMPOSE_PULL_MODE}" -d --force-recreate --no-deps \
-    rbac-server rbac-worker rbac-scheduler rbac-kafka-consumer
-  exit 0
 fi
 
-compose_up_args=(up --pull "${COMPOSE_PULL_MODE}" -d)
+compose_up_args=(up --build --pull "${COMPOSE_PULL_MODE}" -d)
 if [[ "${RBAC_FORCE_RECREATE:-false}" == "true" ]]; then
   compose_up_args+=(--force-recreate)
 fi

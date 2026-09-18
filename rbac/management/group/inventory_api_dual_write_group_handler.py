@@ -24,11 +24,11 @@ from management.group.inventory_api_dual_write_subject_handler import InventoryA
 from management.group.model import Group
 from management.group.platform import GlobalPolicyIdService
 from management.inventory_replicator.inventory_replicator import (
-    DualWriteException,
     InventoryReplicator,
     PartitionKey,
     ReplicationEvent,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.inventory_replicator.types import RelationTuple
 from management.models import Workspace
@@ -94,7 +94,7 @@ class InventoryApiDualWriteGroupHandler(InventoryApiDualWriteSubjectHandler):
             )
         except Exception as e:
             logger.error(f"Initialization of InventoryApiDualWriteGroupHandler failed: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _generate_member_relations(self):
         """Generate user-groups relations."""
@@ -171,7 +171,7 @@ class InventoryApiDualWriteGroupHandler(InventoryApiDualWriteSubjectHandler):
             )
         except Exception as e:
             logger.error(f"Replication event failed for group: {self.group.uuid}: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def generate_relations_reset_roles(
         self, roles: Iterable[Role], remove_default_access_from: Optional[TenantMapping] = None

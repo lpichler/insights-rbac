@@ -26,6 +26,7 @@ from management.inventory_replicator.inventory_replicator import (
     DualWriteException,
     InventoryReplicator,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.inventory_replicator.logging_replicator import stringify_spicedb_relationship
 from management.inventory_replicator.outbox_replicator import OutboxReplicator
@@ -151,7 +152,7 @@ class InventoryApiDualWriteSubjectHandler:
             self._tenant_version = lock_tenant_version(self.tenant)
         except Exception as e:
             logger.error(f"Initialization of InventoryApiDualWriteSubjectHandler failed: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replication_enabled(self):
         """Check whether replication enabled."""

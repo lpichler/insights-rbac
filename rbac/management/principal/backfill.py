@@ -18,10 +18,11 @@
 
 import copy
 
-from django.db import transaction
+from management.atomic_transactions import atomic
 from management.models import Principal
 
 
+@atomic
 def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
@@ -72,8 +73,7 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
         effective_user = copy.copy(user)
         effective_user.org_id = tenant.org_id
 
-    with transaction.atomic():
-        bootstrap_service.update_user(effective_user, upsert=True)
+    bootstrap_service.update_user(effective_user, upsert=True)
 
 
 def backfill_remote_principals(bootstrap_service, users, tenant):

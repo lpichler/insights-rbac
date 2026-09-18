@@ -27,10 +27,11 @@ from json.decoder import JSONDecodeError
 
 from django.conf import settings
 from django.core.handlers.wsgi import WSGIRequest
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError
 from django.http import Http404, HttpResponse, QueryDict
 from django.urls import Resolver404, resolve, reverse
 from feature_flags import FEATURE_FLAGS
+from management.atomic_transactions import run_atomic_with_retry
 from management.authorization.token_validator import ITSSOTokenValidator, TokenValidator
 from management.cache import TenantCache
 from management.inventory_replicator.outbox_replicator import OutboxReplicator
@@ -219,8 +220,11 @@ class IdentityHeaderMiddleware:
                 # Tenants are normally bootstrapped via principal job,
                 # but there is a race condition where the user can use the service before the message is processed.
                 try:
-                    with transaction.atomic():
-                        bootstrap = self.bootstrap_service.update_user(request.user, upsert=True, ready_tenant=True)
+                    bootstrap = run_atomic_with_retry(
+                        5,
+                        lambda: self.bootstrap_service.update_user(request.user, upsert=True, ready_tenant=True),
+                    )
+
                     if bootstrap is None:
                         # User is inactive. Should never happen but just in case...
                         raise Http404()
@@ -232,7 +236,7 @@ class IdentityHeaderMiddleware:
             TENANTS.save_tenant(tenant)
 
         # Backfill requesting user's TenantMapping membership.
-        backfill_remote_principal(self.bootstrap_service, request.user, tenant)
+        run_atomic_with_retry(5, lambda: backfill_remote_principal(self.bootstrap_service, request.user, tenant))
 
         return tenant
 

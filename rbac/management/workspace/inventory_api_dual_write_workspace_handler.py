@@ -22,12 +22,12 @@ from typing import Optional
 
 from django.db import OperationalError
 from management.inventory_replicator.inventory_replicator import (
-    DualWriteException,
     InventoryReplicator,
     PartitionKey,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.models import Workspace
 from management.role.inventory_api_dual_write_handler import BaseInventoryApiDualWriteHandler
@@ -59,7 +59,7 @@ class InventoryApiDualWriteWorkspaceHandler(BaseInventoryApiDualWriteHandler):
             self.relations_to_remove = []
             super().__init__(replicator)
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replicate_new_workspace(self):
         """Replicate new principals into group."""
@@ -144,7 +144,7 @@ class InventoryApiDualWriteWorkspaceHandler(BaseInventoryApiDualWriteHandler):
             )
             raise
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _get_workspace_relationship(self, workspace: Workspace, parent: Workspace):
         """Get the relationship for the workspace."""
