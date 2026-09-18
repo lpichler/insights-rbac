@@ -237,7 +237,7 @@ class RaiseDualWriteExceptionTests(TransactionTestCase):
 
     def test_reraise_serialization_failure_as_operational_error(self):
         """Serialization failures must not be wrapped as DualWriteException."""
-        from management.relation_replicator.relation_replicator import (
+        from management.inventory_replicator.inventory_replicator import (
             DualWriteException,
             raise_dual_write_exception,
         )
@@ -250,7 +250,7 @@ class RaiseDualWriteExceptionTests(TransactionTestCase):
 
     def test_reraise_deadlock_as_operational_error(self):
         """Deadlocks must not be wrapped as DualWriteException."""
-        from management.relation_replicator.relation_replicator import raise_dual_write_exception
+        from management.inventory_replicator.inventory_replicator import raise_dual_write_exception
 
         exc = _make_deadlock_error()
         with self.assertRaises(OperationalError) as ctx:
@@ -259,7 +259,7 @@ class RaiseDualWriteExceptionTests(TransactionTestCase):
 
     def test_wraps_other_errors_as_dual_write_exception(self):
         """Non-retriable errors are still wrapped as DualWriteException."""
-        from management.relation_replicator.relation_replicator import (
+        from management.inventory_replicator.inventory_replicator import (
             DualWriteException,
             raise_dual_write_exception,
         )
@@ -271,7 +271,7 @@ class RaiseDualWriteExceptionTests(TransactionTestCase):
     @override_settings(ATOMIC_RETRY_DISABLED=False)
     def test_atomic_with_retry_retries_when_handler_uses_raise_dual_write_exception(self):
         """Simulates dual-write wrapping: SSI via raise_dual_write_exception is retried."""
-        from management.relation_replicator.relation_replicator import (
+        from management.inventory_replicator.inventory_replicator import (
             DualWriteException,
             raise_dual_write_exception,
         )
