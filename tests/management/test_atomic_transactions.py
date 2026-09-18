@@ -15,6 +15,7 @@ from management.atomic_transactions import (
 )
 
 from api.models import Tenant
+from tests.identity_request import TransactionalIdentityRequest
 
 
 def _make_serialization_error(msg="conflict"):
@@ -232,7 +233,7 @@ class RunAtomicWithRetryTests(TransactionTestCase):
         self.assertEqual(call_count["n"], 1)
 
 
-class RaiseDualWriteExceptionTests(TransactionTestCase):
+class RaiseDualWriteExceptionTests(TransactionalIdentityRequest):
     """Tests for raise_dual_write_exception retry transparency."""
 
     def test_reraise_serialization_failure_as_operational_error(self):

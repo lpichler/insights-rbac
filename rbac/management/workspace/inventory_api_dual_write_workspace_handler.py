@@ -20,7 +20,6 @@
 import logging
 from typing import Optional
 
-from django.db import OperationalError
 from management.inventory_replicator.inventory_replicator import (
     InventoryReplicator,
     PartitionKey,
@@ -133,16 +132,6 @@ class InventoryApiDualWriteWorkspaceHandler(BaseInventoryApiDualWriteHandler):
                     ),
                     WorkspaceEventStream.STANDARD,
                 )
-        except OperationalError:
-            logger.warning(
-                "Database operational error during workspace dual write replication, "
-                "workspace_id='%s' event_type='%s'. "
-                "The transaction may be retried by pgtransaction.",
-                self.workspace.id,
-                self.event_type,
-                exc_info=True,
-            )
-            raise
         except Exception as e:
             raise_dual_write_exception(e, context=f"Workspace dual-write replication workspace_id={self.workspace.id}")
 
