@@ -44,16 +44,21 @@ class DualWriteException(Exception):
     pass
 
 
-def raise_dual_write_exception(exc: BaseException) -> NoReturn:
+def raise_dual_write_exception(exc: BaseException, *, context: str = "Dual-write operation") -> NoReturn:
     """
     Convert handler failures into DualWriteException, except retriable DB conflicts.
 
     SerializationFailure / DeadlockDetected must propagate as OperationalError so
     ``@atomic_with_retry`` / pgtransaction can retry the outer transaction. Wrapping
     them as DualWriteException bypasses that retry filter and surfaces 500s to clients.
+
+    Retriable conflicts are logged at INFO (expected under concurrency; request may
+    still succeed after retry). Non-retriable failures are logged at ERROR.
     """
     if isinstance(exc, OperationalError) and _is_serialization_or_deadlock(exc):
+        logger.info("%s hit retriable serialization/deadlock conflict: %s", context, exc)
         raise exc
+    logger.error("%s failed: %s", context, exc)
     raise DualWriteException(exc)
 
 

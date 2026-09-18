@@ -93,8 +93,7 @@ class InventoryApiDualWriteGroupHandler(InventoryApiDualWriteSubjectHandler):
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(f"Initialization of InventoryApiDualWriteGroupHandler failed: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Initialization of InventoryApiDualWriteGroupHandler")
 
     def _generate_member_relations(self):
         """Generate user-groups relations."""
@@ -170,8 +169,7 @@ class InventoryApiDualWriteGroupHandler(InventoryApiDualWriteSubjectHandler):
                 ),
             )
         except Exception as e:
-            logger.error(f"Replication event failed for group: {self.group.uuid}: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context=f"Replication event for group {self.group.uuid}")
 
     def generate_relations_reset_roles(
         self, roles: Iterable[Role], remove_default_access_from: Optional[TenantMapping] = None

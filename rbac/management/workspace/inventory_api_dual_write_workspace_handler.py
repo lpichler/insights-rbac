@@ -59,7 +59,7 @@ class InventoryApiDualWriteWorkspaceHandler(BaseInventoryApiDualWriteHandler):
             self.relations_to_remove = []
             super().__init__(replicator)
         except Exception as e:
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Initialization of InventoryApiDualWriteWorkspaceHandler")
 
     def replicate_new_workspace(self):
         """Replicate new principals into group."""
@@ -144,7 +144,7 @@ class InventoryApiDualWriteWorkspaceHandler(BaseInventoryApiDualWriteHandler):
             )
             raise
         except Exception as e:
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context=f"Workspace dual-write replication workspace_id={self.workspace.id}")
 
     def _get_workspace_relationship(self, workspace: Workspace, parent: Workspace):
         """Get the relationship for the workspace."""

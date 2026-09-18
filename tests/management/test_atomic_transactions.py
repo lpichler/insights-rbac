@@ -268,6 +268,33 @@ class RaiseDualWriteExceptionTests(TransactionTestCase):
             raise_dual_write_exception(ValueError("boom"))
         self.assertIsInstance(ctx.exception.args[0], ValueError)
 
+    def test_retriable_conflict_logs_info_not_error(self):
+        """Serialization conflicts must not emit ERROR (avoids Glitchtip noise on successful retries)."""
+        from management.inventory_replicator import inventory_replicator as ir_mod
+        from management.inventory_replicator.inventory_replicator import raise_dual_write_exception
+
+        with patch.object(ir_mod.logger, "info") as mock_info, patch.object(ir_mod.logger, "error") as mock_error:
+            with self.assertRaises(OperationalError):
+                raise_dual_write_exception(_make_serialization_error(), context="Replication event for group X")
+        mock_info.assert_called_once()
+        self.assertIn("retriable serialization/deadlock", mock_info.call_args.args[0])
+        mock_error.assert_not_called()
+
+    def test_non_retriable_failure_logs_error(self):
+        """Hard dual-write failures still log at ERROR."""
+        from management.inventory_replicator import inventory_replicator as ir_mod
+        from management.inventory_replicator.inventory_replicator import (
+            DualWriteException,
+            raise_dual_write_exception,
+        )
+
+        with patch.object(ir_mod.logger, "error") as mock_error:
+            with self.assertRaises(DualWriteException):
+                raise_dual_write_exception(ValueError("boom"), context="Replication event for group X")
+        mock_error.assert_called_once()
+        self.assertIn("%s failed: %s", mock_error.call_args.args[0])
+        self.assertEqual(mock_error.call_args.args[1], "Replication event for group X")
+
     @override_settings(ATOMIC_RETRY_DISABLED=False)
     def test_atomic_with_retry_retries_when_handler_uses_raise_dual_write_exception(self):
         """Simulates dual-write wrapping: SSI via raise_dual_write_exception is retried."""

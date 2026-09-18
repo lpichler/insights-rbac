@@ -262,7 +262,7 @@ class SeedingInventoryApiDualWriteHandler(BaseInventoryApiDualWriteHandler):
                 ),
             )
         except Exception as e:
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Failed to replicate role dual-write event")
 
 
 # Here, Any is the type of the model's pk attribute.
@@ -342,8 +342,7 @@ class InventoryApiDualWriteHandler(BaseInventoryApiDualWriteHandler):
 
             assert_v1_write_allowed(self.tenant)
         except Exception as e:
-            logger.error(f"Failed to initialize InventoryApiDualWriteHandler with error: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Failed to initialize InventoryApiDualWriteHandler")
 
     def prepare_for_update(self):
         """Generate relations from current state of role and UUIDs for v2 role and role binding from database."""
@@ -375,8 +374,7 @@ class InventoryApiDualWriteHandler(BaseInventoryApiDualWriteHandler):
                 for v2_role in self.v2_roles.values():
                     self.current_role_relations.append(role_owner_relationship(v2_role.uuid, tenant_resource_id))
         except Exception as e:
-            logger.error(f"Failed to generated relations for v2 role & role bindings: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Failed to generate relations for v2 role & role bindings")
 
     def replicate_new_or_updated_role(self, role):
         """Generate replication event to outbox table."""
@@ -432,8 +430,9 @@ class InventoryApiDualWriteHandler(BaseInventoryApiDualWriteHandler):
                 ),
             )
         except Exception as e:
-            logger.error(f"Failed to replicate event for role {self.role.name}, UUID :{self.role.uuid}: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(
+                e, context=f"Failed to replicate event for role {self.role.name}, UUID :{self.role.uuid}"
+            )
 
     def _generate_relations_and_mappings_for_role(self):
         """Generate relations and mappings for a role with new UUIDs for v2 role and role bindings."""
@@ -484,7 +483,9 @@ class InventoryApiDualWriteHandler(BaseInventoryApiDualWriteHandler):
 
             return relations
         except Exception as e:
-            logger.error(
-                f"Failed to generate relations and mappings for role {self.role.name!r}, UUID: {self.role.uuid}: {e}"
+            raise_dual_write_exception(
+                e,
+                context=(
+                    f"Failed to generate relations and mappings for role {self.role.name!r}, UUID: {self.role.uuid}"
+                ),
             )
-            raise_dual_write_exception(e)
