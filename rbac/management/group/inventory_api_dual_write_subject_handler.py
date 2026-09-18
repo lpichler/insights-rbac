@@ -151,8 +151,7 @@ class InventoryApiDualWriteSubjectHandler:
 
             self._tenant_version = lock_tenant_version(self.tenant)
         except Exception as e:
-            logger.error(f"Initialization of InventoryApiDualWriteSubjectHandler failed: {e}")
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Initialization of InventoryApiDualWriteSubjectHandler")
 
     def replication_enabled(self):
         """Check whether replication enabled."""

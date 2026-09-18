@@ -17,7 +17,6 @@
 
 """Class to handle Dual Write API related operations."""
 
-import logging
 from typing import Iterable, Optional
 
 from management.atomic_transactions import atomic
@@ -41,8 +40,6 @@ from management.subject import SubjectType
 from management.tenant_mapping.v2_activation import TenantVersion
 
 from api.models import CrossAccountRequest, Tenant
-
-logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
 class _LocalReplicator(InventoryReplicator):
@@ -93,12 +90,13 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(
-                f"Error initializing InventoryApiDualWriteCrossAccessHandler for request id: "
-                f"{self.cross_account_request.request_id}"
+            raise_dual_write_exception(
+                e,
+                context=(
+                    "Error initializing InventoryApiDualWriteCrossAccessHandler for request id: "
+                    f"{self.cross_account_request.request_id}"
+                ),
             )
-
-            raise_dual_write_exception(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -133,8 +131,7 @@ class InventoryApiDualWriteCrossAccessHandler(InventoryApiDualWriteSubjectHandle
                 ),
             )
         except Exception as e:
-            logger.error("Error occurred in cross account replicate event %s", e, exc_info=True)
-            raise_dual_write_exception(e)
+            raise_dual_write_exception(e, context="Error occurred in cross account replicate event")
 
     def replicate(self):
         """Replicate generated relations."""
