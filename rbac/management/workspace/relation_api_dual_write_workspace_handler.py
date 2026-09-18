@@ -23,12 +23,12 @@ from typing import Optional
 from django.db import OperationalError
 from management.models import Workspace
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.role.relation_api_dual_write_handler import BaseRelationApiDualWriteHandler
 from management.workspace.utils.event import make_workspace_event
@@ -59,7 +59,7 @@ class RelationApiDualWriteWorkspaceHandler(BaseRelationApiDualWriteHandler):
             self.relations_to_remove = []
             super().__init__(replicator)
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replicate_new_workspace(self):
         """Replicate new principals into group."""
@@ -144,7 +144,7 @@ class RelationApiDualWriteWorkspaceHandler(BaseRelationApiDualWriteHandler):
             )
             raise
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _get_workspace_relationship(self, workspace: Workspace, parent: Workspace):
         """Get the relationship for the workspace."""

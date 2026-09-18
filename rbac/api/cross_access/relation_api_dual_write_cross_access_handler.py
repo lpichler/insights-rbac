@@ -26,13 +26,13 @@ from management.models import Workspace
 from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
 from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEvent,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.role.model import BindingMapping, Role
 from management.role.v2_model import SeededRoleV2
@@ -98,7 +98,7 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
                 f"{self.cross_account_request.request_id}"
             )
 
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -134,7 +134,7 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
             )
         except Exception as e:
             logger.error("Error occurred in cross account replicate event", e)
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replicate(self):
         """Replicate generated relations."""

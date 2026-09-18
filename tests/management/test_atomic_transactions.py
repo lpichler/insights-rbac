@@ -230,3 +230,63 @@ class RunAtomicWithRetryTests(TransactionTestCase):
             run_atomic_with_retry(5, always_fail)
 
         self.assertEqual(call_count["n"], 1)
+
+
+class RaiseDualWriteExceptionTests(TransactionTestCase):
+    """Tests for raise_dual_write_exception retry transparency."""
+
+    def test_reraise_serialization_failure_as_operational_error(self):
+        """Serialization failures must not be wrapped as DualWriteException."""
+        from management.relation_replicator.relation_replicator import (
+            DualWriteException,
+            raise_dual_write_exception,
+        )
+
+        exc = _make_serialization_error()
+        with self.assertRaises(OperationalError) as ctx:
+            raise_dual_write_exception(exc)
+        self.assertIs(ctx.exception, exc)
+        self.assertNotIsInstance(ctx.exception, DualWriteException)
+
+    def test_reraise_deadlock_as_operational_error(self):
+        """Deadlocks must not be wrapped as DualWriteException."""
+        from management.relation_replicator.relation_replicator import raise_dual_write_exception
+
+        exc = _make_deadlock_error()
+        with self.assertRaises(OperationalError) as ctx:
+            raise_dual_write_exception(exc)
+        self.assertIs(ctx.exception, exc)
+
+    def test_wraps_other_errors_as_dual_write_exception(self):
+        """Non-retriable errors are still wrapped as DualWriteException."""
+        from management.relation_replicator.relation_replicator import (
+            DualWriteException,
+            raise_dual_write_exception,
+        )
+
+        with self.assertRaises(DualWriteException) as ctx:
+            raise_dual_write_exception(ValueError("boom"))
+        self.assertIsInstance(ctx.exception.args[0], ValueError)
+
+    @override_settings(ATOMIC_RETRY_DISABLED=False)
+    def test_atomic_with_retry_retries_when_handler_uses_raise_dual_write_exception(self):
+        """Simulates dual-write wrapping: SSI via raise_dual_write_exception is retried."""
+        from management.relation_replicator.relation_replicator import (
+            DualWriteException,
+            raise_dual_write_exception,
+        )
+
+        call_count = {"n": 0}
+
+        def flaky_work():
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                try:
+                    raise_dual_write_exception(_make_serialization_error())
+                except DualWriteException:
+                    self.fail("serialization error should not be wrapped")
+            return "ok"
+
+        result = run_atomic_with_retry(5, flaky_work)
+        self.assertEqual(result, "ok")
+        self.assertEqual(call_count["n"], 3)
