@@ -441,10 +441,10 @@ class PrincipalV2GroupCountTests(IdentityRequest):
             g.principals.add(p)
 
         client = APIClient()
-        # 10 queries of overhead in the request machinery (includes savepoints from
+        # 9 queries of overhead in the request machinery (includes savepoints from
         # run_atomic_with_retry + @atomic on backfill_remote_principal).
         # 3 queries for the actual data: tenant lookup, pagination COUNT, annotated data fetch.
-        with self.assertNumQueries(13):
+        with self.assertNumQueries(12):
             response = client.get(V2_URL, **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
