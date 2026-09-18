@@ -34,6 +34,7 @@ from management.relation_replicator.relation_replicator import (
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.relation_replicator.types import RelationTuple
 from management.role.model import BindingMapping, Role
@@ -261,7 +262,7 @@ class SeedingRelationApiDualWriteHandler(BaseRelationApiDualWriteHandler):
                 ),
             )
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
 
 # Here, Any is the type of the model's pk attribute.
@@ -342,7 +343,7 @@ class RelationApiDualWriteHandler(BaseRelationApiDualWriteHandler):
             assert_v1_write_allowed(self.tenant)
         except Exception as e:
             logger.error(f"Failed to initialize RelationApiDualWriteHandler with error: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def prepare_for_update(self):
         """Generate relations from current state of role and UUIDs for v2 role and role binding from database."""
@@ -375,7 +376,7 @@ class RelationApiDualWriteHandler(BaseRelationApiDualWriteHandler):
                     self.current_role_relations.append(role_owner_relationship(v2_role.uuid, tenant_resource_id))
         except Exception as e:
             logger.error(f"Failed to generated relations for v2 role & role bindings: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def replicate_new_or_updated_role(self, role):
         """Generate replication event to outbox table."""
@@ -432,7 +433,7 @@ class RelationApiDualWriteHandler(BaseRelationApiDualWriteHandler):
             )
         except Exception as e:
             logger.error(f"Failed to replicate event for role {self.role.name}, UUID :{self.role.uuid}: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
 
     def _generate_relations_and_mappings_for_role(self):
         """Generate relations and mappings for a role with new UUIDs for v2 role and role bindings."""
@@ -486,4 +487,4 @@ class RelationApiDualWriteHandler(BaseRelationApiDualWriteHandler):
             logger.error(
                 f"Failed to generate relations and mappings for role {self.role.name!r}, UUID: {self.role.uuid}: {e}"
             )
-            raise DualWriteException(e)
+            raise_dual_write_exception(e)
