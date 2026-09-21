@@ -16,12 +16,12 @@
 #
 """View for PermissionV2 management."""
 
-from django.conf import settings
 from django.db.models import Q
 from django.db.models.functions import Collate
 from django_filters import rest_framework as filters
 from management.filters import CommonFilters
 from management.models import Access, Permission, Role
+from management.permission.service import PermissionService
 from management.permission.v2_serializer import PermissionV2ResponseSerializer, validate_fields_parameter
 from management.permissions.permission_access import PermissionAccessPermission
 from management.role.v2_role_scope import v2_role_excluded_applications
@@ -79,7 +79,7 @@ class PermissionV2Filter(CommonFilters):
         """Filter to return only permissions from applications allowed for role creation."""
         query_field = validate_and_get_key(self.request.query_params, field, VALID_BOOLEAN_PARAM_VALS, "false")
         if query_field == "true":
-            queryset = queryset.filter(application__in=settings.ROLE_CREATE_ALLOW_LIST)
+            queryset = PermissionService().restrict_to_role_creation_allowed(queryset)
         return queryset
 
     application = filters.CharFilter(field_name="application", method="multiple_values_in")

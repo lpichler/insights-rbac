@@ -16,6 +16,7 @@
 #
 """Application service for Permission operations."""
 
+from django.conf import settings
 from management.permission.model import Permission, PermissionValue
 
 
@@ -29,3 +30,7 @@ class PermissionService:
 
         permission_strings = [PermissionValue.from_v2_dict(perm_dict).v1_string() for perm_dict in permission_data]
         return list(Permission.objects.filter(permission__in=permission_strings))
+
+    def restrict_to_role_creation_allowed(self, queryset):
+        """Restrict a permission queryset to applications allowed for role creation."""
+        return queryset.filter(application__in=settings.ROLE_CREATE_ALLOW_LIST)
