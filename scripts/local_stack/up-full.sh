@@ -151,6 +151,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 require_cmd() {
+  # Verify that a required external command is available on PATH.
   if ! command -v "$1" &>/dev/null; then
     log-err "Required command not found: $1"
     exit 1
@@ -158,6 +159,9 @@ require_cmd() {
 }
 
 prompt_local_repo() {
+  # Prompt the user for a local checkout path for the given service.
+  # Uses the saved or default path when the terminal is non-interactive.
+  # Arguments: service name, default path.
   local service="$1" default_path="$2" current_path
 
   case "${service}" in
@@ -200,6 +204,9 @@ prompt_local_repo() {
 }
 
 resolve_local_source_paths() {
+  # Resolve and validate local checkout paths for all services whose
+  # source kind is "local". Falls back to default paths for Inventory
+  # and HBI when no local path is configured.
   if [[ "${RBAC_SOURCE_KIND}" == local ]]; then
     prompt_local_repo RBAC "${REPO_ROOT}"
     RBAC_LOCAL_REPO="$(cd "${RBAC_LOCAL_REPO:-${REPO_ROOT}}" 2>/dev/null && pwd)" || {
@@ -241,8 +248,15 @@ resolve_local_source_paths() {
 }
 
 save_local_source_paths() {
+  # Persist user-selected local checkout paths to the config file so
+  # subsequent runs reuse them. Preserves previously saved Inventory
+  # and HBI paths when their current source is not "local". Skipped
+  # inside a temporary RBAC PR worktree invocation.
   [[ "${RBAC_PR_WORKTREE:-false}" != true ]] || return 0
-  [[ -n "${RBAC_LOCAL_REPO:-}" || -n "${RBAC_CONFIG_REPO:-}" ]] || return 0
+  [[ -n "${RBAC_LOCAL_REPO:-}" ||
+    -n "${RBAC_CONFIG_REPO:-}" ||
+    "${INVENTORY_SOURCE_KIND}" == local ||
+    "${HBI_SOURCE_KIND}" == local ]] || return 0
 
   local config_dir config_tmp
   local inventory_path hbi_path
@@ -282,6 +296,9 @@ save_local_source_paths() {
 }
 
 start_rbac_worktree() {
+  # Create a temporary detached worktree for non-local RBAC sources
+  # (upstream, PR, or commit SHA), copy the current orchestration
+  # scripts into it, and re-invoke up-full.sh from that checkout.
   [[ "${RBAC_SOURCE_KIND}" != local ]] || return 0
   [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
 
@@ -484,6 +501,8 @@ select_rbac_config_source() {
 }
 
 select_inventory_source() {
+  # Parse the INVENTORY_SOURCE value and set INVENTORY_SOURCE_KIND,
+  # INVENTORY_SOURCE_REPO, INVENTORY_PR_NUMBER, or INVENTORY_SOURCE_REF.
   case "${INVENTORY_SOURCE}" in
     local)
       INVENTORY_SOURCE_KIND=local
@@ -515,6 +534,8 @@ select_inventory_source() {
 }
 
 select_hbi_source() {
+  # Parse the HBI_SOURCE value and set HBI_SOURCE_KIND,
+  # HBI_SOURCE_REPO, HBI_PR_NUMBER, or HBI_SOURCE_REF.
   case "${HBI_SOURCE}" in
     local)
       HBI_SOURCE_KIND=local
@@ -546,10 +567,13 @@ select_hbi_source() {
 }
 
 stack_is_running() {
+  # Return true when the full Kessel RBAC server container is running.
   [[ "$("${CONTAINER_RUNTIME}" container inspect --format '{{.State.Running}}' full-kessel-rbac-server-1 2>/dev/null || true)" == true ]]
 }
 
 print_source_summary() {
+  # Log the selected deployment sources and note when an existing
+  # stack is being rebuilt.
   log-info "Deployment sources: RBAC=${RBAC_SOURCE_LABEL}, rbac-config=${RBAC_CONFIG_SOURCE_LABEL}, HBI=${HBI_SOURCE}, Kessel Inventory=${INVENTORY_SOURCE}."
   if [[ "${STACK_WAS_RUNNING}" == true ]]; then
     log-info 'Existing Docker stack detected; rebuilding or refreshing services for the selected sources.'
@@ -560,6 +584,8 @@ SOURCE_WORKTREE_PATHS=()
 SOURCE_WORKTREE_BASES=()
 
 cleanup_source_worktrees() {
+  # Remove all temporary git worktrees created for Inventory or HBI
+  # non-local sources. Registered as a trap handler.
   local index
   for index in "${!SOURCE_WORKTREE_PATHS[@]}"; do
     git -C "${SOURCE_WORKTREE_BASES[${index}]}" worktree remove --force "${SOURCE_WORKTREE_PATHS[${index}]}" >/dev/null 2>&1 || true
@@ -567,6 +593,11 @@ cleanup_source_worktrees() {
 }
 
 create_source_worktree() {
+  # Fetch a ref from a remote repository and create a temporary
+  # detached worktree for it. Updates the corresponding repo variable
+  # (INVENTORY_API_REPO or HBI_REPO) and registers the worktree for
+  # cleanup. Arguments: service, base_repo, source_repo, fetch_ref,
+  # worktree_prefix.
   local service="$1" base_repo="$2" source_repo="$3" fetch_ref="$4" worktree_prefix="$5"
   local worktree
 
@@ -586,6 +617,9 @@ create_source_worktree() {
 }
 
 ensure_inventory_api_repo() {
+  # Ensure the Kessel Inventory checkout exists and contains the
+  # required start-full-kessel.sh script. Clones upstream when the
+  # checkout is absent and the source is not local.
   if [[ ! -f "${INVENTORY_API_REPO}/scripts/start-full-kessel.sh" ]]; then
     if [[ "${INVENTORY_SOURCE_KIND}" == local ]]; then
       log-err "Local Kessel Inventory checkout is incomplete: ${INVENTORY_API_REPO}"
@@ -602,6 +636,9 @@ ensure_inventory_api_repo() {
 }
 
 ensure_hbi_repo() {
+  # Ensure the Host Inventory checkout exists and contains dev.yml.
+  # Clones upstream when the checkout is absent and the source is not
+  # local.
   if [[ ! -f "${HBI_REPO}/dev.yml" ]]; then
     if [[ "${HBI_SOURCE_KIND}" == local ]]; then
       log-err "Local HBI checkout is incomplete: ${HBI_REPO}"
@@ -618,6 +655,9 @@ ensure_hbi_repo() {
 }
 
 prepare_inventory_api_source() {
+  # Prepare the Kessel Inventory source according to
+  # INVENTORY_SOURCE_KIND: validate the local checkout, pull upstream,
+  # or create a temporary worktree for a PR or commit SHA.
   ensure_inventory_api_repo
   case "${INVENTORY_SOURCE_KIND}" in
     local)
@@ -639,6 +679,9 @@ prepare_inventory_api_source() {
 }
 
 prepare_hbi_source() {
+  # Prepare the Host Inventory source according to HBI_SOURCE_KIND:
+  # validate the local checkout, pull upstream, or create a temporary
+  # worktree for a PR or commit SHA.
   ensure_hbi_repo
   case "${HBI_SOURCE_KIND}" in
     local)
@@ -660,6 +703,7 @@ prepare_hbi_source() {
 }
 
 initialize_hbi_submodules() {
+  # Initialize and update git submodules in the HBI checkout.
   log-info "Initializing Host Inventory git submodules..."
   git -C "${HBI_REPO}" submodule update --init --recursive
 }
