@@ -58,12 +58,11 @@ Please use `make <target>` where <target> is one of:
   docker-grype				Run security checks on the project image(s)
 
 --- Commands using the local full Kessel stack ---
-  docker-local-full-up rbac=<source> rbac-config=<source>
-                            build and start the selected RBAC sources
+  docker-local-full-up rbac=<source> rbac-config=<source> inventory=<source> hbi=<source>
+                            build and start the selected service sources
                             source: local, upstream, a GitHub PR URL, or a commit SHA
-                            defaults: rbac=local, rbac-config=upstream
+                            defaults: rbac=local, rbac-config=upstream, inventory=upstream, hbi=upstream
                             prompts and saves local checkout paths per user
-                            HBI and Kessel Inventory use upstream sources
   docker-local-full-health
                             check full Kessel, RBAC, HBI, and endpoint health
   docker-local-full-list-users
@@ -328,11 +327,19 @@ docker-local-logs:
 
 RBAC_SOURCE ?= local
 RBAC_CONFIG_SOURCE ?= upstream
+INVENTORY_SOURCE ?= upstream
+HBI_SOURCE ?= upstream
 ifneq ($(strip $(rbac)),)
 override RBAC_SOURCE := $(rbac)
 endif
 ifneq ($(strip $(rbac-config)),)
 override RBAC_CONFIG_SOURCE := $(rbac-config)
+endif
+ifneq ($(strip $(inventory)),)
+override INVENTORY_SOURCE := $(inventory)
+endif
+ifneq ($(strip $(hbi)),)
+override HBI_SOURCE := $(hbi)
 endif
 
 LEGACY_FULL_STACK_VARS := $(strip $(pr)$(local)$(rebuild)$(rbac_config_pr)$(rbac_config_repo)$(schema_zed_file))
@@ -343,7 +350,9 @@ docker-local-full-up:
 		echo "Legacy full-stack options are no longer supported; use rbac=<source> and rbac-config=<source>." >&2; \
 		exit 2; \
 	fi
-	RBAC_SOURCE="$(RBAC_SOURCE)" RBAC_CONFIG_SOURCE="$(RBAC_CONFIG_SOURCE)" ./scripts/local_stack/up-full.sh
+	RBAC_SOURCE="$(RBAC_SOURCE)" RBAC_CONFIG_SOURCE="$(RBAC_CONFIG_SOURCE)" \
+	INVENTORY_SOURCE="$(INVENTORY_SOURCE)" HBI_SOURCE="$(HBI_SOURCE)" \
+	./scripts/local_stack/up-full.sh
 
 .PHONY: docker-local-full-up
 .PHONY: docker-local-full-health

@@ -80,7 +80,8 @@ two `*-org-admin` users have
 
 #### Source selection
 
-Select the RBAC and `rbac-config` sources directly on the command line:
+Select the RBAC, `rbac-config`, Kessel Inventory, and HBI sources directly on
+the command line:
 
 | Source | Meaning |
 | --- | --- |
@@ -89,8 +90,6 @@ Select the RBAC and `rbac-config` sources directly on the command line:
 | `<GitHub PR URL>` | Source fetched from the specified pull request |
 | `<commit SHA>` | Source fetched at the specified commit |
 
-HBI and Kessel Inventory always use upstream sources for now. Their checkouts
-are updated under `.local-deps/` for each deployment.
 The hard-coded upstream repositories are
 [insights-rbac](https://github.com/project-kessel/insights-rbac),
 [rbac-config](https://github.com/project-kessel/rbac-config),
@@ -106,6 +105,10 @@ make docker-local-full-up rbac=<rbac-commit-sha> rbac-config=<config-commit-sha>
 make docker-local-full-up \
   rbac=https://github.com/project-kessel/insights-rbac/pull/3309 \
   rbac-config=https://github.com/project-kessel/rbac-config/pull/123
+make docker-local-full-up inventory=local hbi=local
+make docker-local-full-up \
+  inventory=https://github.com/project-kessel/inventory-api/pull/123 \
+  hbi=https://github.com/RedHatInsights/insights-host-inventory/pull/456
 ```
 
 For `rbac-config=local`, the default sibling checkout at `../rbac-config` is
@@ -123,11 +126,13 @@ make docker-local-full-up rbac=local rbac-config=local
 The saved path file is `$XDG_CONFIG_HOME/insights-rbac/local-stack.env`, or
 `~/.config/insights-rbac/local-stack.env` when `XDG_CONFIG_HOME` is not set.
 
+The default local directories for Kessel Inventory and HBI are
+`.local-deps/inventory-api` and `.local-deps/insights-host-inventory`.
+
 If the Docker stack is already running, the command rebuilds and recreates the
 services affected by the selected sources and prints a deployment summary.
-For example, rerunning the local command rebuilds RBAC, refreshes the selected
-`rbac-config` schema and role definitions, and rebuilds the upstream Kessel and
-HBI services.
+For example, rerunning the local command rebuilds RBAC and the selected local
+or fetched service sources.
 
 ##### Run the basic V2 API validation
 

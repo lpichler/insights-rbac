@@ -5,8 +5,8 @@ The commands use Podman when it is available, but Docker is also supported.
 
 ## Start the stack
 
-Select the source for each configurable service with `rbac=` and
-`rbac-config=`:
+Select the source for each service with `rbac=`, `rbac-config=`, `inventory=`,
+and `hbi=`:
 
 | Source | Meaning |
 | --- | --- |
@@ -15,8 +15,8 @@ Select the source for each configurable service with `rbac=` and
 | `<GitHub PR URL>` | Source fetched from the specified pull request |
 | `<commit SHA>` | Source fetched at the specified commit |
 
-HBI and Kessel Inventory always use upstream sources for now. Their checkouts
-are maintained under `.local-deps/` and updated for each deployment. The
+The default local directories for Kessel Inventory and HBI are
+`.local-deps/inventory-api` and `.local-deps/insights-host-inventory`. The
 hard-coded upstream repositories are
 [insights-rbac](https://github.com/project-kessel/insights-rbac),
 [rbac-config](https://github.com/project-kessel/rbac-config),
@@ -32,10 +32,14 @@ hard-coded upstream repositories are
 | RBAC PR | `make docker-local-full-up rbac=<rbac-pr-url>` |
 | Config PR | `make docker-local-full-up rbac=local rbac-config=<config-pr-url>` |
 | RBAC PR and config PR | `make docker-local-full-up rbac=<rbac-pr-url> rbac-config=<config-pr-url>` |
+| Local Inventory and HBI | `make docker-local-full-up inventory=local hbi=local` |
+| Inventory and HBI commits | `make docker-local-full-up inventory=<inventory-commit-sha> hbi=<hbi-commit-sha>` |
+| Inventory and HBI PRs | `make docker-local-full-up inventory=<inventory-pr-url> hbi=<hbi-pr-url>` |
 
 For a local source, the command prompts for the checkout directory. Press
-Enter to use the default RBAC checkout (the current repository) or the default
-`../rbac-config` checkout. The selected paths are saved in the user-local
+Enter to use the default checkout. Defaults are the current repository for
+RBAC, `../rbac-config` for `rbac-config`, and the two `.local-deps` directories
+for Inventory and HBI. Selected paths are saved in the user-local
 configuration file and reused on the next run:
 
 ```bash
