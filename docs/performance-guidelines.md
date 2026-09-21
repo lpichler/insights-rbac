@@ -111,8 +111,8 @@ Set `ATOMIC_RETRY_DISABLED=True` in test settings to skip `pgtransaction` wrappe
 |---|---|---|
 | `cross_account_cleanup` | Daily at midnight | Expire cross-account requests |
 | `run_redis_cache_health` | Every 30 seconds | Toggle caching on Redis failure |
-| `principal_cleanup_via_umb` | Every 60 seconds (if UMB enabled) | Process principal events from UMB |
-| `principal_cleanup` | Every 7 days (if UMB disabled) | Clean stale principals via BOP |
+| `principal_cleanup_via_kafka` | Every 60 seconds (if Kafka cleanup enabled + topic set) | Process principal events from Kafka |
+| `principal_cleanup` | Every 7 days (fallback when Kafka cleanup not configured) | Clean stale principals via BOP |
 
 ### Task Guidelines
 
