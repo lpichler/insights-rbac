@@ -30,6 +30,7 @@ from management.relation_replicator.relation_replicator import (
     DualWriteException,
     RelationReplicator,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.role.relation_api_dual_write_handler import RelationApiDualWriteHandler
 from management.role.v2_model import SeededRoleV2
@@ -150,8 +151,7 @@ class RelationApiDualWriteSubjectHandler:
 
             self._tenant_version = lock_tenant_version(self.tenant)
         except Exception as e:
-            logger.error(f"Initialization of RelationApiDualWriteSubjectHandler failed: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Initialization of RelationApiDualWriteSubjectHandler")
 
     def replication_enabled(self):
         """Check whether replication enabled."""

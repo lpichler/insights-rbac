@@ -17,7 +17,6 @@
 
 """Class to handle Dual Write API related operations."""
 
-import logging
 from typing import Iterable, Optional
 
 from management.atomic_transactions import atomic
@@ -26,13 +25,13 @@ from management.models import Workspace
 from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
 from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEvent,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.role.model import BindingMapping, Role
 from management.role.v2_model import SeededRoleV2
@@ -41,8 +40,6 @@ from management.subject import SubjectType
 from management.tenant_mapping.v2_activation import TenantVersion
 
 from api.models import CrossAccountRequest, Tenant
-
-logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
 class _LocalReplicator(RelationReplicator):
@@ -93,12 +90,13 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(
-                f"Error initializing RelationApiDualWriteCrossAccessHandler for request id: "
-                f"{self.cross_account_request.request_id}"
+            raise_dual_write_exception(
+                e,
+                context=(
+                    "Error initializing RelationApiDualWriteCrossAccessHandler for request id: "
+                    f"{self.cross_account_request.request_id}"
+                ),
             )
-
-            raise DualWriteException(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -133,8 +131,7 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
                 ),
             )
         except Exception as e:
-            logger.error("Error occurred in cross account replicate event", e)
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Error occurred in cross account replicate event")
 
     def replicate(self):
         """Replicate generated relations."""

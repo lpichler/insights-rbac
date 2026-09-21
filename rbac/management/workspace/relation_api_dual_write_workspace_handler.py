@@ -20,15 +20,14 @@
 import logging
 from typing import Optional
 
-from django.db import OperationalError
 from management.models import Workspace
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.role.relation_api_dual_write_handler import BaseRelationApiDualWriteHandler
 from management.workspace.utils.event import make_workspace_event
@@ -59,7 +58,7 @@ class RelationApiDualWriteWorkspaceHandler(BaseRelationApiDualWriteHandler):
             self.relations_to_remove = []
             super().__init__(replicator)
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Initialization of RelationApiDualWriteWorkspaceHandler")
 
     def replicate_new_workspace(self):
         """Replicate new principals into group."""
@@ -133,18 +132,8 @@ class RelationApiDualWriteWorkspaceHandler(BaseRelationApiDualWriteHandler):
                     ),
                     WorkspaceEventStream.STANDARD,
                 )
-        except OperationalError:
-            logger.warning(
-                "Database operational error during workspace dual write replication, "
-                "workspace_id='%s' event_type='%s'. "
-                "The transaction may be retried by pgtransaction.",
-                self.workspace.id,
-                self.event_type,
-                exc_info=True,
-            )
-            raise
         except Exception as e:
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context=f"Workspace dual-write replication workspace_id={self.workspace.id}")
 
     def _get_workspace_relationship(self, workspace: Workspace, parent: Workspace):
         """Get the relationship for the workspace."""

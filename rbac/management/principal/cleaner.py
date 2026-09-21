@@ -26,9 +26,10 @@ from xml.parsers.expat import ExpatError
 import xmltodict
 from core.kafka import RBACProducer, get_cluster_config
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import connection
 from kafka import KafkaConsumer
 from kafka.errors import KafkaError
+from management.atomic_transactions import run_atomic_with_retry
 from management.principal.model import Principal
 from management.principal.proxy import PrincipalProxy, external_principal_to_user
 from management.relation_replicator.outbox_replicator import OutboxReplicator
@@ -57,6 +58,18 @@ kafka_messages_success_total = Counter(
 kafka_messages_failure_total = Counter(
     METRIC_KAFKA_MESSAGES_FAILURE_TOTAL,
     "Number of Kafka messages that failed to be processed",
+)
+
+# KAFKA Shadow Mode Metrics
+METRIC_KAFKA_DRY_RUN_MESSAGES_TOTAL = "kafka_dry_run_messages_total"
+METRIC_KAFKA_DRY_RUN_ERRORS_TOTAL = "kafka_dry_run_errors_total"
+kafka_dry_run_messages_total = Counter(
+    METRIC_KAFKA_DRY_RUN_MESSAGES_TOTAL,
+    "Number of Kafka messages processed in dry-run/shadow mode",
+)
+kafka_dry_run_errors_total = Counter(
+    METRIC_KAFKA_DRY_RUN_ERRORS_TOTAL,
+    "Number of Kafka messages that would have failed if not in dry-run mode",
 )
 
 
@@ -264,6 +277,12 @@ def retrieve_user_info_kafka(message) -> User:
     return external_principal_to_user(user_data)
 
 
+class _LockContention(Exception):
+    """Raised when the advisory listener lock cannot be acquired."""
+
+    pass
+
+
 class MessageProcessingResult(NamedTuple):
     """
     Result of processing a Kafka message.
@@ -277,198 +296,243 @@ class MessageProcessingResult(NamedTuple):
     success: bool
 
 
+def _parse_kafka_message_to_user(message):
+    """Parse a Kafka message into a User object.
+
+    Handles tombstones, JSON and XML formats.
+    Returns (user, None) on success or (None, 'tombstone') for tombstones.
+    Raises on parse failure.
+    """
+    if message.value is None:
+        return None, "tombstone"
+
+    message_value = message.value.decode("utf-8") if isinstance(message.value, bytes) else message.value
+
+    try:
+        message_data = json.loads(message_value)
+        canonical_message = message_data.get("CanonicalMessage", message_data)
+        return retrieve_user_info_kafka(canonical_message), None
+    except json.JSONDecodeError as json_error:
+        try:
+            data_dict = xmltodict.parse(message_value)
+            canonical_message = data_dict.get("CanonicalMessage")
+            return retrieve_user_info_umb(canonical_message), None
+        except ExpatError as xml_error:
+            raise Exception(
+                f"Message is neither valid JSON nor valid XML. " f"JSON error: {json_error}. XML error: {xml_error}"
+            ) from xml_error
+
+
+def _send_to_dlq(message, error, dlq_producer, dry_run) -> MessageProcessingResult:
+    """Attempt to send a failed message to DLQ. Returns a MessageProcessingResult."""
+    if not dlq_producer or not hasattr(settings, "KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC"):
+        logger.warning(
+            "process_kafka_message: No DLQ producer configured. "
+            "Failed message at offset %d will be retried on restart.",
+            message.offset,
+        )
+        return MessageProcessingResult(should_continue=True, success=dry_run)
+
+    dlq_topic = settings.KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC
+    if not dlq_topic:
+        logger.warning(
+            "process_kafka_message: No DLQ topic configured. "
+            "Failed message at offset %d will be retried on restart.",
+            message.offset,
+        )
+        return MessageProcessingResult(should_continue=True, success=dry_run)
+
+    try:
+        # NOTE: original_message may contain PII (usernames, org/account IDs)
+        # Ensure DLQ topic has appropriate access controls and retention policy
+        if isinstance(message.value, bytes):
+            try:
+                original_message = message.value.decode("utf-8")
+                message_encoding = "utf-8"
+            except UnicodeDecodeError:
+                original_message = base64.b64encode(message.value).decode("ascii")
+                message_encoding = "base64"
+        else:
+            original_message = message.value
+            message_encoding = "string"
+
+        dlq_message = {
+            "original_message": original_message,
+            "message_encoding": message_encoding,
+            "error": str(error),
+            "error_type": type(error).__name__,
+            "partition": message.partition,
+            "offset": message.offset,
+            "timestamp": message.timestamp,
+            "dry_run": dry_run,
+        }
+
+        dlq_producer.send_kafka_message(dlq_topic, dlq_message)
+        logger.info(
+            "process_kafka_message: Sent failed message to DLQ topic %s (partition=%d, offset=%d)",
+            dlq_topic,
+            message.partition,
+            message.offset,
+        )
+        return MessageProcessingResult(should_continue=True, success=True)
+
+    except Exception as dlq_error:
+        logger.error(
+            "process_kafka_message: Failed to send message to DLQ: %s. " "Message will be retried on restart.",
+            str(dlq_error),
+        )
+        capture_exception(dlq_error)
+        if dry_run:
+            logger.warning("process_kafka_message: DLQ failure in dry-run mode, committing offset anyway")
+            return MessageProcessingResult(should_continue=True, success=True)
+        return MessageProcessingResult(should_continue=True, success=False)
+
+
 def process_kafka_message(
-    message, bootstrap_service: TenantBootstrapService, dlq_producer=None
+    message, bootstrap_service: TenantBootstrapService, dlq_producer=None, dry_run: bool = False
 ) -> MessageProcessingResult:
     """
     Process each Kafka message.
+
+    Message parsing runs outside the transaction (pure computation).  The DB
+    work (advisory lock + update_user) runs inside ``run_atomic_with_retry`` so
+    that serialization conflicts with concurrent API traffic are properly
+    retried at the outermost transaction boundary.
 
     Args:
         message: Kafka message containing user event data
         bootstrap_service: Service for updating user/tenant state
         dlq_producer: Optional RBACProducer instance for sending failed messages to DLQ
+        dry_run: If True, validate message but don't write to database (shadow mode)
 
     Returns:
         MessageProcessingResult with:
         - should_continue: False if another listener is running (lock contention), True otherwise
         - success: True if message was processed successfully, False if it failed
     """
-    with transaction.atomic():
-        # This is locked per transaction to ensure another listener process does not run concurrently.
-        if not _lock_listener():
-            # If there is another listener, let it run and abort this one.
-            logger.info("process_kafka_message: Another listener is running. Aborting.")
-            return MessageProcessingResult(should_continue=False, success=False)
+    # --- 1. Parse message + resolve user outside the transaction ---
+    # This calls BOP (network I/O) so can raise transient errors too.
+    try:
+        user, marker = _parse_kafka_message_to_user(message)
+    except Exception as e:
+        mode_msg = " (DRY RUN)" if dry_run else ""
+        logger.error("process_kafka_message: Error parsing Kafka message%s: %s", mode_msg, str(e))
+        capture_exception(e)
+        kafka_messages_failure_total.inc()
 
-        try:
-            # Handle tombstone messages (Kafka deletes with null value)
-            if message.value is None:
-                logger.warning(
-                    "process_kafka_message: Received tombstone message (null value) at offset %d. "
-                    "Tombstones are not expected in principal cleanup topic. Skipping.",
-                    message.offset,
-                )
-                kafka_messages_success_total.inc()
+        is_permanent_error = isinstance(
+            e,
+            (
+                json.JSONDecodeError,  # Malformed JSON
+                ExpatError,  # Malformed XML
+                KeyError,  # Missing required field in message
+                ValueError,  # Invalid data format
+                UnicodeDecodeError,  # Invalid message encoding
+                AttributeError,  # Wrong message structure
+                TypeError,  # Wrong type in message
+            ),
+        )
+
+        if dry_run:
+            kafka_dry_run_errors_total.inc()
+            if is_permanent_error:
+                return _send_to_dlq(message, e, dlq_producer, dry_run=True)
+            else:
+                # Transient error in dry-run: commit offset and continue
+                logger.warning("DRY RUN: Transient error detected - message would be retried in production.")
                 return MessageProcessingResult(should_continue=True, success=True)
 
-            # Parse message - handle both XML (from UMB bridge) and JSON (from native Kafka producer)
-            # The messaging bridge copies raw UMB message bodies (XML) to Kafka during migration
-            # Decode here (not in consumer config) so UTF-8 errors reach our error handling/DLQ logic
-            message_value = message.value.decode("utf-8") if isinstance(message.value, bytes) else message.value
+        if is_permanent_error:
+            return _send_to_dlq(message, e, dlq_producer, dry_run=False)
+        else:
+            logger.warning(
+                "process_kafka_message: Transient error at offset %d. "
+                "Will not commit offset - message will be retried on next consumer run.",
+                message.offset,
+            )
+            return MessageProcessingResult(should_continue=True, success=False)
 
-            # Try JSON first, then fallback to XML - more robust than string prefix detection
-            # This handles edge cases like leading whitespace (" <CanonicalMessage>")
-            parse_error = None
-            user = None
+    # --- 2. Tombstone handling (no DB needed) ---
+    if marker == "tombstone":
+        logger.warning(
+            "process_kafka_message: Received tombstone message (null value) at offset %d. "
+            "Tombstones are not expected in principal cleanup topic. Skipping.",
+            message.offset,
+        )
+        kafka_messages_success_total.inc()
+        return MessageProcessingResult(should_continue=True, success=True)
 
-            try:
-                # Attempt JSON parse first (most common in Kafka-native deployments)
-                message_data = json.loads(message_value)
-                canonical_message = message_data.get("CanonicalMessage", message_data)
-                # Use Kafka retrieval logic for JSON messages (plain keys, no @ or # prefixes)
-                user = retrieve_user_info_kafka(canonical_message)
-            except json.JSONDecodeError as json_error:
-                # Not valid JSON - try XML (from UMB bridge during migration)
-                try:
-                    data_dict = xmltodict.parse(message_value)
-                    canonical_message = data_dict.get("CanonicalMessage")
-                    # Use UMB retrieval logic for XML-parsed messages (handles @ and #text attributes)
-                    user = retrieve_user_info_umb(canonical_message)
-                except ExpatError as xml_error:
-                    # Neither JSON nor XML - this is an unprocessable message
-                    parse_error = Exception(
-                        f"Message is neither valid JSON nor valid XML. "
-                        f"JSON error: {json_error}. XML error: {xml_error}"
-                    )
-                    raise parse_error
+    # --- 3. Dry-run mode: validate only, no DB writes ---
+    if dry_run:
+        logger.debug("DRY RUN: Would process user")
+        if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA:
+            logger.debug("DRY RUN: Would call bootstrap_service.update_user()")
+        kafka_messages_success_total.inc()
+        kafka_dry_run_messages_total.inc()
+        return MessageProcessingResult(should_continue=True, success=True)
 
-            # By default, only process disabled users.
-            # If the setting is enabled, process all users.
+    # --- 4. Normal mode: DB work with proper outer retry ---
+    try:
+
+        def _db_work():
+            if not _lock_listener():
+                raise _LockContention()
             if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA:
-                # If Tenant is not already ready, don't ready it
                 bootstrap_service.update_user(user, ready_tenant=False)
 
-            kafka_messages_success_total.inc()
-            return MessageProcessingResult(should_continue=True, success=True)
-        except Exception as e:
-            logger.error("process_kafka_message: Error processing Kafka message: %s", str(e))
-            capture_exception(e)
-            kafka_messages_failure_total.inc()
+        run_atomic_with_retry(5, _db_work)
+        kafka_messages_success_total.inc()
+        return MessageProcessingResult(should_continue=True, success=True)
 
-            # Determine if this is a permanent error (unprocessable message) or transient error (retry later)
-            # Permanent errors: Parsing failures, missing fields, schema violations, wrong types/structure
-            # Transient errors: Network issues, DB connection problems, temporary service unavailability
-            is_permanent_error = isinstance(
-                e,
-                (
-                    json.JSONDecodeError,  # Malformed JSON
-                    ExpatError,  # Malformed XML (from xmltodict.parse)
-                    KeyError,  # Missing required field in message
-                    ValueError,  # Invalid data format
-                    UnicodeDecodeError,  # Invalid message encoding
-                    AttributeError,  # Wrong message structure (e.g., accessing nonexistent attributes)
-                    TypeError,  # Wrong type in message (e.g., iterating over non-iterable)
-                ),
+    except _LockContention:
+        logger.info("process_kafka_message: Another listener is running. Aborting.")
+        return MessageProcessingResult(should_continue=False, success=False)
+
+    except Exception as e:
+        logger.error("process_kafka_message: Error processing Kafka message: %s", str(e))
+        capture_exception(e)
+        kafka_messages_failure_total.inc()
+
+        # Determine if this is a permanent error or transient error
+        is_permanent_error = isinstance(
+            e,
+            (
+                KeyError,  # Missing required field in message
+                ValueError,  # Invalid data format
+                AttributeError,  # Wrong message structure
+                TypeError,  # Wrong type in message
+            ),
+        )
+
+        if not is_permanent_error:
+            logger.warning(
+                "process_kafka_message: Transient error at offset %d. "
+                "Will not commit offset - message will be retried on next consumer run.",
+                message.offset,
             )
+            return MessageProcessingResult(should_continue=True, success=False)
 
-            # For permanent errors, send to DLQ. For transient errors, retry.
-            if not is_permanent_error:
-                # Transient errors don't commit offset and will retry
-                logger.warning(
-                    "process_kafka_message: Transient error at offset %d. "
-                    "Will not commit offset - message will be retried on next consumer run.",
-                    message.offset,
-                )
-                return MessageProcessingResult(should_continue=True, success=False)
-
-            # Permanent error - send to DLQ inside transaction
-            # This prevents race window where advisory lock is released before DLQ send completes
-            if dlq_producer and hasattr(settings, "KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC"):
-                dlq_topic = settings.KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC
-                if dlq_topic:
-                    try:
-                        # Build DLQ message with error context
-                        # NOTE: original_message may contain PII (usernames, org/account IDs)
-                        # Ensure DLQ topic has appropriate access controls and retention policy
-
-                        # Preserve invalid UTF-8 payloads by base64-encoding them
-                        # This allows poison messages (e.g., UnicodeDecodeError) to be delivered to DLQ
-                        if isinstance(message.value, bytes):
-                            try:
-                                # Try to decode as UTF-8 first
-                                original_message = message.value.decode("utf-8")
-                                message_encoding = "utf-8"
-                            except UnicodeDecodeError:
-                                # If UTF-8 decode fails, base64-encode the raw bytes to preserve them
-                                original_message = base64.b64encode(message.value).decode("ascii")
-                                message_encoding = "base64"
-                        else:
-                            # Already a string (shouldn't happen with raw consumer, but handle it)
-                            original_message = message.value
-                            message_encoding = "string"
-
-                        dlq_message = {
-                            "original_message": original_message,
-                            "message_encoding": message_encoding,
-                            "error": str(e),
-                            "error_type": type(e).__name__,
-                            "partition": message.partition,
-                            "offset": message.offset,
-                            "timestamp": message.timestamp,
-                        }
-
-                        # Send to DLQ while holding advisory lock (inside transaction)
-                        # This prevents race window where another consumer could pick up the same message
-                        # before DLQ send completes. Trade-off: holding DB lock during network I/O,
-                        # but ensures exactly-once semantics for DLQ delivery.
-                        dlq_producer.send_kafka_message(dlq_topic, dlq_message)
-                        logger.info(
-                            "process_kafka_message: Sent failed message to DLQ topic %s (partition=%d, offset=%d)",
-                            dlq_topic,
-                            message.partition,
-                            message.offset,
-                        )
-
-                        # Rollback any partial DB writes from update_user before transaction commits
-                        # This prevents inconsistent state where message is in DLQ but partial changes are committed
-                        transaction.set_rollback(True)
-
-                        # Return success=True so offset gets committed (message successfully moved to DLQ)
-                        return MessageProcessingResult(should_continue=True, success=True)
-
-                    except Exception as dlq_error:
-                        logger.error(
-                            "process_kafka_message: Failed to send message to DLQ: %s. "
-                            "Message will be retried on restart.",
-                            str(dlq_error),
-                        )
-                        capture_exception(dlq_error)
-                        # DLQ send failed, so don't commit offset (will retry message)
-                        return MessageProcessingResult(should_continue=True, success=False)
-                else:
-                    logger.warning(
-                        "process_kafka_message: No DLQ topic configured. "
-                        "Failed message at offset %d will be retried on restart.",
-                        message.offset,
-                    )
-                    return MessageProcessingResult(should_continue=True, success=False)
-            else:
-                logger.warning(
-                    "process_kafka_message: No DLQ producer configured. "
-                    "Failed message at offset %d will be retried on restart.",
-                    message.offset,
-                )
-                return MessageProcessingResult(should_continue=True, success=False)
+        return _send_to_dlq(message, e, dlq_producer, dry_run=False)
 
 
-def process_principal_events_from_kafka(bootstrap_service: Optional[TenantBootstrapService] = None):
+def process_principal_events_from_kafka(
+    bootstrap_service: Optional[TenantBootstrapService] = None, dry_run: bool = False
+):
     """
     Process principal events from Kafka.
 
     Args:
         bootstrap_service: Service for tenant/user operations
+        dry_run: If True, process messages but don't write to database (shadow mode)
     """
-    logger.info("process_principal_events_from_kafka: Start processing principal events from Kafka.")
+    mode_msg = " (DRY RUN - SHADOW MODE)" if dry_run else ""
+    logger.info(f"process_principal_events_from_kafka: Start processing principal events from Kafka{mode_msg}.")
+
+    if dry_run:
+        logger.warning(
+            "KAFKA SHADOW MODE: Messages will be processed but NO database writes will occur. "
+            "This is for validation only."
+        )
     bootstrap_service = bootstrap_service or get_tenant_bootstrap_service(OutboxReplicator())
 
     # Validate required configuration
@@ -482,10 +546,9 @@ def process_principal_events_from_kafka(bootstrap_service: Optional[TenantBootst
 
     # Build Kafka consumer configuration
     # NOTE: This consumer runs periodically via Celery beat (every 60s) and consumes for 15s,
-    # creating a 45-second gap between consumption periods. This matches the UMB behavior
-    # where the consumer also ran periodically. For continuous consumption, a persistent
+    # creating a 45-second gap between consumption periods. For continuous consumption, a persistent
     # consumer (like launch-rbac-kafka-consumer) would be more appropriate, but this
-    # approach maintains compatibility with the existing UMB-based architecture.
+    # approach maintains compatibility with the existing architecture.
 
     # Include ENV_NAME in group_id to prevent offset interference across environments
     # In multi-env setups (staging, ephemeral, CI) that share a Kafka cluster, environments
@@ -509,7 +572,7 @@ def process_principal_events_from_kafka(bootstrap_service: Optional[TenantBootst
         "auto_offset_reset": "earliest",
         "enable_auto_commit": False,  # Manual commit for at-least-once semantics
         # No value_deserializer - leave as bytes to handle tombstones and UTF-8 errors in process_kafka_message
-        "consumer_timeout_ms": 15000,  # 15 second timeout per run, matches UMB behavior
+        "consumer_timeout_ms": 15000,  # 15 second timeout per run
         # Timeout tuning: 60s beat cycle + 15s drain must fit in session_timeout_ms without causing LeaveGroup
         "session_timeout_ms": settings.KAFKA_PRINCIPAL_CLEANUP_SESSION_TIMEOUT_MS,
         "heartbeat_interval_ms": settings.KAFKA_PRINCIPAL_CLEANUP_HEARTBEAT_INTERVAL_MS,
@@ -555,12 +618,14 @@ def process_principal_events_from_kafka(bootstrap_service: Optional[TenantBootst
 
         # Process messages
         for message in consumer:
+            mode_suffix = " (DRY RUN)" if dry_run else ""
             logger.info(
-                "process_principal_events_from_kafka: Processing message from partition %d at offset %d",
+                "process_principal_events_from_kafka: Processing message from partition %d at offset %d%s",
                 message.partition,
                 message.offset,
+                mode_suffix,
             )
-            result = process_kafka_message(message, bootstrap_service, dlq_producer)
+            result = process_kafka_message(message, bootstrap_service, dlq_producer, dry_run=dry_run)
             if not result.should_continue:
                 # Lock contention - another listener is running, abort this consumer
                 logger.info("process_principal_events_from_kafka: Lock contention detected, aborting consumer.")

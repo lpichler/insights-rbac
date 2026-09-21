@@ -68,7 +68,7 @@ from kessel.relations.v1beta1 import (
     relation_tuples_pb2,
     relation_tuples_pb2_grpc,
 )
-from management.atomic_transactions import atomic_with_retry
+from management.atomic_transactions import atomic_with_retry, run_atomic_with_retry
 from management.audit_log.model import AuditLog
 from management.cache import JWTCache, TenantCache
 from management.group.relation_api_dual_write_group_handler import RelationApiDualWriteGroupHandler
@@ -1833,7 +1833,7 @@ def principal_removal(request):
     if not destructive_ok("api"):
         return HttpResponse("Destructive operations disallowed.", status=400)
 
-    with transaction.atomic():
+    def do_process():
         bootstrap_service = V2TenantBootstrapService(OutboxReplicator())
         for principal in principals_delete:
             if not principal.user_id:
@@ -1848,6 +1848,8 @@ def principal_removal(request):
                 bootstrap_service.update_user(user)
 
         return HttpResponse(f"Users deleted: {principal_usernames}", status=204)
+
+    return run_atomic_with_retry(5, do_process)
 
 
 def retrieve_ungrouped_workspace(request):
@@ -3431,8 +3433,10 @@ def bootstrap_users_from_user_ids(request):
             continue
 
         try:
-            with transaction.atomic():
-                bootstrapped = bootstrap_service.update_user(user, upsert=True, ready_tenant=True)
+            bootstrapped = run_atomic_with_retry(
+                5, lambda: bootstrap_service.update_user(user, upsert=True, ready_tenant=True)
+            )
+
             if bootstrapped is None:
                 results.append(
                     {

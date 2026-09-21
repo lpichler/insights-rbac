@@ -18,10 +18,12 @@
 
 import copy
 
-from django.db import transaction
+from django.conf import settings
+from management.atomic_transactions import atomic
 from management.models import Principal
 
 
+@atomic
 def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
@@ -61,19 +63,28 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     except Principal.DoesNotExist:
         pass  # New principal — needs sync.
 
-    effective_user = user
+    if settings.PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED:
+        effective_user = user
 
-    # TODO: remove this
-    #
-    # Although org_id appears to always be included in Users produced from real PrincipalProxy responses, some tests do
-    # not include it, so this is a hack to avoid having to update every test that ends up touching this code. Really, we
-    # should just make org_id mandatory, but that's a bigger change.
-    if not user.org_id:
-        effective_user = copy.copy(user)
-        effective_user.org_id = tenant.org_id
+        # TODO: remove this
+        #
+        # Although org_id appears to always be included in Users produced from real PrincipalProxy responses, some tests
+        # do not include it, so this is a hack to avoid having to update every test that ends up touching this code.
+        # Really, we should just make org_id mandatory, but that's a bigger change.
+        if not user.org_id:
+            effective_user = copy.copy(user)
+            effective_user.org_id = tenant.org_id
 
-    with transaction.atomic():
         bootstrap_service.update_user(effective_user, upsert=True)
+    else:
+        # There is potentially a race condition with Kafka here, since we might do this with a user we received that
+        # was, at the time, active but has since been deactivated. In the worst case, we'll just have a principal for
+        # an inactive user with no default permissions. We choose to accept this risk. If this becomes a proble,
+        # in the worst case we can run the job to remove all inactive principals.
+        Principal.objects.filter(username__iexact=user.username).get_or_create(
+            tenant=tenant,
+            defaults={"username": user.username, "user_id": user.user_id},
+        )
 
 
 def backfill_remote_principals(bootstrap_service, users, tenant):
