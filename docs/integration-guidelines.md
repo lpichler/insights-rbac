@@ -143,7 +143,7 @@ Kafka-based consumer in `management/principal/cleaner.py`. Processes principal c
 
 - Controlled by `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED` (default `True`) and `KAFKA_PRINCIPAL_CLEANUP_TOPIC`
 - Runs as a Celery beat task every 60 seconds when both the flag is enabled and a topic is configured
-- Falls back to BOP-based cleanup (`clean_tenants_principals`) every 7 days when Kafka cleanup is not configured
+- Falls back to BOP-based cleanup (`clean_tenants_principals`) approximately every 7 days (on the 7th, 14th, 21st, and 28th of each month) when Kafka cleanup is not configured
 - Failed messages are sent to a dead-letter queue topic (`KAFKA_PRINCIPAL_CLEANUP_DLQ_TOPIC`) when configured
 
 ## 8. Notifications Service
@@ -166,7 +166,7 @@ Scheduled tasks in `rbac/rbac/celery.py`:
 - `cross_account_cleanup` -- daily at midnight
 - `run_redis_cache_health` -- every 30 seconds
 - `principal_cleanup_via_kafka` -- every 60 seconds (when `KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED` and `KAFKA_PRINCIPAL_CLEANUP_TOPIC` are set)
-- `principal_cleanup` -- every 7 days (fallback when Kafka cleanup is not configured)
+- `principal_cleanup` -- approximately every 7 days, on the 7th/14th/21st/28th (fallback when Kafka cleanup is not configured)
 
 Worker starts a Prometheus metrics server on Clowder's `metricsPort` (default 9000). Failure to start metrics server exits the process.
 

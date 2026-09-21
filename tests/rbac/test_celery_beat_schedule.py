@@ -19,6 +19,7 @@
 import importlib
 from unittest.mock import patch
 
+from celery.schedules import crontab
 from django.test import TestCase, override_settings
 
 
@@ -51,6 +52,10 @@ class TestBeatSchedulePrincipalCleanup(TestCase):
         self.assertEqual(
             schedule["principal-cleanup-every-sevenish-days"]["task"], "management.tasks.principal_cleanup"
         )
+        self.assertEqual(
+            schedule["principal-cleanup-every-sevenish-days"]["schedule"],
+            crontab(0, 0, day_of_month="7-28/7"),
+        )
         self.assertNotIn("principal-cleanup-every-minute", schedule)
 
     @override_settings(KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED=False, KAFKA_PRINCIPAL_CLEANUP_TOPIC="test-topic")
@@ -58,6 +63,10 @@ class TestBeatSchedulePrincipalCleanup(TestCase):
         """When JOB_ENABLED is False (even with a topic), the 7-day sweep is scheduled."""
         schedule = self._reload_celery_schedule()
         self.assertIn("principal-cleanup-every-sevenish-days", schedule)
+        self.assertEqual(
+            schedule["principal-cleanup-every-sevenish-days"]["schedule"],
+            crontab(0, 0, day_of_month="7-28/7"),
+        )
         self.assertNotIn("principal-cleanup-every-minute", schedule)
 
     @override_settings(KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED=False, KAFKA_PRINCIPAL_CLEANUP_TOPIC="")
@@ -65,4 +74,8 @@ class TestBeatSchedulePrincipalCleanup(TestCase):
         """When both are off/empty, the 7-day sweep is scheduled."""
         schedule = self._reload_celery_schedule()
         self.assertIn("principal-cleanup-every-sevenish-days", schedule)
+        self.assertEqual(
+            schedule["principal-cleanup-every-sevenish-days"]["schedule"],
+            crontab(0, 0, day_of_month="7-28/7"),
+        )
         self.assertNotIn("principal-cleanup-every-minute", schedule)
