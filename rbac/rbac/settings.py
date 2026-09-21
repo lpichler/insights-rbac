@@ -557,6 +557,8 @@ KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED = ENVIRONMENT.bool(
     "KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED", default=True
 )
 
+PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED = EPH_ENV
+
 # if we don't enable KAFKA we can't use the notifications
 if not KAFKA_ENABLED:
     NOTIFICATIONS_ENABLED = False
@@ -719,13 +721,6 @@ if ENVIRONMENT.bool("CLOWDER_ENABLED", default=False):
             f"WARNING: Dependency endpoint for '{KESSEL_RELATION_CLOWDER_APPLICATION_NAME}' not found: {e}. "
             f"Falling back to default RELATION_API_SERVER value: {RELATION_API_SERVER}"
         )
-
-RELATIONS_API_CLIENT_ID = ENVIRONMENT.get_value("RELATION_API_CLIENT_ID", default="")
-RELATIONS_API_CLIENT_SECRET = ENVIRONMENT.get_value("RELATION_API_CLIENT_SECRET", default="")
-RELATIONS_API_TOKEN_URL = ENVIRONMENT.get_value(
-    "RELATIONS_API_TOKEN_URL",
-    default="https://sso.stage.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token",
-)
 
 INVENTORY_API_CLIENT_ID = ENVIRONMENT.get_value("INVENTORY_API_CLIENT_ID", default="")
 INVENTORY_API_CLIENT_SECRET = ENVIRONMENT.get_value("INVENTORY_API_CLIENT_SECRET", default="")

@@ -29,11 +29,11 @@ from internal.migration_coordination import (
     build_migration_notify_resource_context,
     migration_notify_coordination,
 )
-from kessel.relations.v1beta1 import common_pb2
+from kessel.inventory.v1beta2 import relationship_pb2
 from management.atomic_transactions import _is_serialization_or_deadlock
 
 if TYPE_CHECKING:
-    from management.relation_replicator.types import RelationTuple
+    from management.inventory_replicator.types import RelationTuple
 
 logger = logging.getLogger(__name__)
 
@@ -44,16 +44,21 @@ class DualWriteException(Exception):
     pass
 
 
-def raise_dual_write_exception(exc: BaseException) -> NoReturn:
+def raise_dual_write_exception(exc: BaseException, *, context: str = "Dual-write operation") -> NoReturn:
     """
     Convert handler failures into DualWriteException, except retriable DB conflicts.
 
     SerializationFailure / DeadlockDetected must propagate as OperationalError so
     ``@atomic_with_retry`` / pgtransaction can retry the outer transaction. Wrapping
     them as DualWriteException bypasses that retry filter and surfaces 500s to clients.
+
+    Retriable conflicts are logged at INFO (expected under concurrency; request may
+    still succeed after retry). Non-retriable failures are logged at ERROR.
     """
     if isinstance(exc, OperationalError) and _is_serialization_or_deadlock(exc):
+        logger.info("%s hit retriable serialization/deadlock conflict: %s", context, exc)
         raise exc
+    logger.error("%s failed: %s", context, exc)
     raise DualWriteException(exc)
 
 
@@ -115,15 +120,15 @@ class ReplicationEvent:
     event_type: ReplicationEventType
     event_info: dict[str, object]
     partition_key: "PartitionKey"
-    add: list[Union["RelationTuple", common_pb2.Relationship]]
-    remove: list[Union["RelationTuple", common_pb2.Relationship]]
+    add: list[Union["RelationTuple", relationship_pb2.Relationship]]
+    remove: list[Union["RelationTuple", relationship_pb2.Relationship]]
 
     def __init__(
         self,
         event_type: ReplicationEventType,
         partition_key: "PartitionKey",
-        add: list[Union["RelationTuple", common_pb2.Relationship]] = [],
-        remove: list[Union["RelationTuple", common_pb2.Relationship]] = [],
+        add: list[Union["RelationTuple", relationship_pb2.Relationship]] = [],
+        remove: list[Union["RelationTuple", relationship_pb2.Relationship]] = [],
         info: dict[str, object] = {},
     ):
         """Initialize ReplicationEvent."""
@@ -268,7 +273,7 @@ class WorkspaceEventStream(Enum):
         raise AssertionError(f"Unexpected WorkspaceEventClass: {self!r}")
 
 
-class RelationReplicator(ABC):
+class InventoryReplicator(ABC):
     """Type responsible for replicating relations to Kessel Relations."""
 
     @abstractmethod

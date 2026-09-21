@@ -1313,6 +1313,7 @@ class V2RbacTenantMiddlewareTest(RbacTenantMiddlewareTest):
         root = Workspace.objects.root(tenant=tenant)
         self.assertIsNotNone(root)
 
+    @override_settings(PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
     def test_existing_tenant_new_user_calls_update_user(self):
         """Test that a new user hitting an existing tenant triggers update_user for TenantMapping sync."""
         # First, bootstrap a tenant so it exists in the DB
@@ -1367,6 +1368,7 @@ class V2RbacTenantMiddlewareTest(RbacTenantMiddlewareTest):
         )
         self.assertEqual(admin_group_tuple_count, 1)
 
+    @override_settings(PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
     def test_cached_tenant_new_user_calls_update_user(self):
         """Test that a new user hitting a cached tenant still triggers update_user."""
         # Bootstrap a tenant so it exists in DB and cache
@@ -1419,6 +1421,7 @@ class V2RbacTenantMiddlewareTest(RbacTenantMiddlewareTest):
         )
         self.assertEqual(admin_group_tuple_count, 1)
 
+    @override_settings(PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
     def test_existing_tenant_existing_principal_skips_update_user(self):
         """Test that an existing principal with user_id set does NOT trigger update_user."""
         # Bootstrap a tenant
