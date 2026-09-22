@@ -302,7 +302,7 @@ start_rbac_worktree() {
   [[ "${RBAC_SOURCE_KIND}" != local ]] || return 0
   [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
 
-  local fetch_ref repository pr_number worktree_prefix
+  local fetch_ref repository worktree_prefix pr_revision master_revision
   case "${RBAC_SOURCE_KIND}" in
     upstream)
       fetch_ref=HEAD
@@ -328,7 +328,19 @@ start_rbac_worktree() {
   rmdir "${pr_worktree}"
   log-info "Fetching RBAC ${RBAC_SOURCE_LABEL} from ${repository}..."
   git -C "${REPO_ROOT}" fetch --no-tags "${repository}" "${fetch_ref}"
-  git -C "${REPO_ROOT}" worktree add --detach "${pr_worktree}" FETCH_HEAD >/dev/null
+  pr_revision="$(git -C "${REPO_ROOT}" rev-parse FETCH_HEAD)"
+  git -C "${REPO_ROOT}" worktree add --detach "${pr_worktree}" "${pr_revision}" >/dev/null
+
+  if [[ "${RBAC_SOURCE_KIND}" == pr ]]; then
+    log-info "Fetching RBAC upstream master from ${repository}..."
+    git -C "${REPO_ROOT}" fetch --no-tags "${repository}" master
+    master_revision="$(git -C "${REPO_ROOT}" rev-parse FETCH_HEAD)"
+    log-info "Rebasing RBAC ${RBAC_SOURCE_LABEL} onto upstream master..."
+    if ! git -C "${pr_worktree}" rebase "${master_revision}"; then
+      log-err "RBAC ${RBAC_SOURCE_LABEL} conflicts with upstream master; stopped at ${pr_worktree}."
+      exit 1
+    fi
+  fi
 
   # Older PR branches may predate the local full-stack helper directory and
   # shared shell helpers. Copy the current orchestration files into the
