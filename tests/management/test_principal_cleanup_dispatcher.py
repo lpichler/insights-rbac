@@ -527,11 +527,13 @@ class PrincipalCleanupDispatcherTest(TestCase):
 
             # First invocation: kafka_active mode
             mock_ff.get_principal_cleanup_mode.return_value = "kafka_active"
-            principal_cleanup_via_message_bus()
+            first_result = principal_cleanup_via_message_bus()
+            self.assertIsNone(first_result)
 
             # Second invocation: mode changed to umb_only via Unleash
             mock_ff.get_principal_cleanup_mode.return_value = "umb_only"
-            principal_cleanup_via_message_bus()
+            second_result = principal_cleanup_via_message_bus()
+            self.assertIsNone(second_result)
 
             # Verify the flag was checked on each invocation
             self.assertEqual(mock_ff.get_principal_cleanup_mode.call_count, 2)
