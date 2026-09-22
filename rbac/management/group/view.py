@@ -18,6 +18,7 @@
 """View for group management."""
 
 import logging
+from functools import partial
 from typing import Iterable, List, Optional, Tuple
 from uuid import UUID
 
@@ -594,7 +595,9 @@ class GroupViewSet(
             principal = Principal.objects.get(username__iexact=username, tenant=tenant)
             group.principals.add(principal)
             new_principals.append(principal)
-            group_principal_change_notification_handler(self.request.user, group, username, "added")
+            transaction.on_commit(
+                partial(group_principal_change_notification_handler, self.request.user, group, username, "added")
+            )
         return group, new_principals
 
     def ensure_id_for_service_accounts_exists(
@@ -671,11 +674,14 @@ class GroupViewSet(
 
             group.principals.add(principal)
             new_service_accounts.append(principal)
-            group_principal_change_notification_handler(
-                self.request.user,
-                group,
-                SERVICE_ACCOUNT_USERNAME_FORMAT.format(clientId=client_id),
-                "added",
+            transaction.on_commit(
+                partial(
+                    group_principal_change_notification_handler,
+                    self.request.user,
+                    group,
+                    SERVICE_ACCOUNT_USERNAME_FORMAT.format(clientId=client_id),
+                    "added",
+                )
             )
 
         return group, new_service_accounts
