@@ -239,8 +239,7 @@ class IdentityHeaderMiddlewareTest(IdentityRequest):
         self.assertTrue(mock_request.user.cross_access)
         self.assertEqual(mock_request.user.username, f"{self.customer['org_id']}-{self.user_data['user_id']}".lower())
 
-    @patch("rbac.middleware.resolve")
-    def test_cross_access_does_not_backfill_principal_with_user_id(self, mock_resolve):
+    def test_cross_access_does_not_backfill_principal_with_user_id(self):
         """Cross-access rewrite must not create a principal that collides on user_id (RHCLOUD-51516)."""
         # Ensure the identity's org already has a tenant and a real principal owning user_id.
         tenant, _ = Tenant.objects.get_or_create(

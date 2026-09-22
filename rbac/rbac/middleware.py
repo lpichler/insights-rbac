@@ -238,7 +238,7 @@ class IdentityHeaderMiddleware:
         # Backfill requesting user's TenantMapping membership.
         # Skip for cross-access: username was rewritten to "{org_id}-{user_id}" and
         # must not create/upsert a principal with the requester's real user_id (RHCLOUD-51516).
-        if not getattr(request.user, "cross_access", False):
+        if not request.user.cross_access:
             run_atomic_with_retry(5, lambda: backfill_remote_principal(self.bootstrap_service, request.user, tenant))
 
         return tenant

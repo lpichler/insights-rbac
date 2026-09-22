@@ -55,7 +55,7 @@ def backfill_remote_principal(bootstrap_service, user, tenant):
     # Cross-access requests rewrite username to "{org_id}-{user_id}" for CAR principal
     # lookup. Do not create/upsert a real principal under that synthetic name — it
     # collides with the requester's existing user_id (RHCLOUD-51516).
-    if getattr(user, "cross_access", False):
+    if user.cross_access:
         return
 
     if user.org_id and user.org_id != tenant.org_id:
