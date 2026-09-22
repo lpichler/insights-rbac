@@ -4653,6 +4653,107 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
         # get_object called inside _write_group_principals (re-fetch under transaction)
         mock_get_object.assert_called()
 
+    @patch("management.group.view.backfill_remote_principals")
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_integration_retries_exhausted_503_no_side_effects(
+        self, mock_request, mock_repl, mock_backfill
+    ):
+        """Integration: _write_group_principals retries 9 times, returns 503, no persisted side effects.
+
+        Unlike the unit tests above that replace _write_group_principals entirely,
+        this test lets the decorated method run with retry logic active. The
+        serialization error is raised from add_users (called inside
+        _write_group_principals), verifying that:
+        - the @atomic_with_retry(retries=8) decorator retries 9 times (1 + 8),
+        - the outer handler maps exhausted retries to HTTP 503,
+        - no principal relation, outbox entry, or notification is persisted.
+        """
+        import functools as _functools
+
+        from django.db import transaction as _transaction
+        from django.db.utils import OperationalError
+        from psycopg2.errors import SerializationFailure
+
+        from management.atomic_transactions import _is_serialization_or_deadlock
+
+        call_counter = {"attempts": 0}
+
+        def failing_add_users(self_view, group, principals_from_response, org_id=None):
+            call_counter["attempts"] += 1
+            err = OperationalError("could not serialize access")
+            err.__cause__ = SerializationFailure("could not serialize access due to concurrent update")
+            raise err
+
+        class _TestRetryAtomic:
+            """Test-friendly pgtransaction.atomic: context manager + decorator with retry."""
+
+            def __init__(self, isolation_level=None, retry=0):
+                self._retry = retry
+                self._atomic = None
+
+            def __enter__(self):
+                self._atomic = _transaction.atomic()
+                return self._atomic.__enter__()
+
+            def __exit__(self, *exc_info):
+                return self._atomic.__exit__(*exc_info)
+
+            def __call__(self, func):
+                retry = self._retry
+
+                @_functools.wraps(func)
+                def wrapper(*args, **kwargs):
+                    last_exc = None
+                    for _ in range(1 + retry):
+                        try:
+                            with _transaction.atomic():
+                                return func(*args, **kwargs)
+                        except OperationalError as exc:
+                            if _is_serialization_or_deadlock(exc):
+                                last_exc = exc
+                                continue
+                            raise
+                    raise last_exc
+
+                return wrapper
+
+        mock_pgtransaction = Mock()
+        mock_pgtransaction.atomic = _TestRetryAtomic
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+        initial_principal_count = self.group.principals.count()
+
+        with patch("management.atomic_transactions.pgtransaction", mock_pgtransaction):
+            with patch("management.atomic_transactions.is_atomic_disabled", return_value=False):
+                with patch("management.group.view.GroupViewSet.add_users", failing_add_users):
+                    response = client.post(url, test_data, format="json", **self.headers)
+
+        # Verify 503 with correct error payload
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+        self.assertEqual(response.data["errors"][0]["source"], "groups")
+
+        # Verify 9 attempts (1 initial + 8 retries from @atomic_with_retry(retries=8))
+        self.assertEqual(call_counter["attempts"], 9)
+
+        # Verify no principal relation was persisted
+        self.assertEqual(self.group.principals.count(), initial_principal_count)
+
+        # Verify no outbox replication event was saved
+        mock_repl.assert_not_called()
+
 
 @override_settings(REPLICATION_TO_RELATION_ENABLED=False, PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
 class GroupPrincipalV2SyncTests(IdentityRequest):
