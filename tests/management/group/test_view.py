@@ -4005,7 +4005,9 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
                 ]
             }
 
-            response = client.post(url, test_data, format="json", **self.headers)
+            # captureOnCommitCallbacks ensures deferred notification callbacks fire within TestCase
+            with self.captureOnCommitCallbacks(execute=True):
+                response = client.post(url, test_data, format="json", **self.headers)
             self.assertEqual(response.status_code, status.HTTP_200_OK)
             principal = Principal.objects.get(username=username)
 
@@ -4455,6 +4457,201 @@ class GroupPrincipalViewsetTests(GroupViewsetTests):
             response.json().get("errors")[0].get("detail"),
             "REMOVE PRINCIPALS cannot be performed on system groups.",
         )
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_returns_503_on_serialization_failure(self, mock_request, mock_repl):
+        """Test that exhausted serialization retries return HTTP 503."""
+        from django.db.utils import OperationalError
+        from psycopg2.errors import SerializationFailure
+
+        serialization_error = OperationalError("could not serialize access")
+        serialization_error.__cause__ = SerializationFailure("could not serialize access due to concurrent update")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch.object(
+            type(self.group),
+            "objects",
+            wraps=type(self.group).objects,
+        ):
+            with patch(
+                "management.group.view.GroupViewSet._write_group_principals",
+                side_effect=serialization_error,
+            ):
+                response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+        self.assertEqual(response.data["errors"][0]["source"], "groups")
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_returns_503_on_deadlock(self, mock_request, mock_repl):
+        """Test that exhausted deadlock retries return HTTP 503."""
+        from django.db.utils import OperationalError
+        from psycopg2.errors import DeadlockDetected
+
+        deadlock_error = OperationalError("deadlock detected")
+        deadlock_error.__cause__ = DeadlockDetected("deadlock detected")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.group.view.GroupViewSet._write_group_principals",
+            side_effect=deadlock_error,
+        ):
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
+        self.assertEqual(
+            response.data["errors"][0]["detail"],
+            "A conflicting update occurred, please retry the request.",
+        )
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_add_principals_propagates_non_serialization_operational_error(self, mock_request, mock_repl):
+        """Test that non-serialization OperationalError propagates instead of returning 503."""
+        from django.db.utils import OperationalError
+
+        bare_error = OperationalError("connection reset by peer")
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.group.view.GroupViewSet._write_group_principals",
+            side_effect=bare_error,
+        ):
+            with self.assertRaises(OperationalError):
+                client.post(url, test_data, format="json", **self.headers)
+
+    def test_add_principals_precheck_blocks_protected_group_before_external_calls(self):
+        """Test that protected-group error surfaces before any external validation."""
+        self.group.platform_default = True
+        self.group.admin_default = False
+        self.group.system = False
+        self.group.save()
+
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch(
+            "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        ) as mock_proxy:
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        # Precheck caught it — BOP proxy never called
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        mock_proxy.assert_not_called()
+
+        # Restore
+        self.group.platform_default = False
+        self.group.save()
+
+    @override_settings(IT_BYPASS_TOKEN_VALIDATION=True, ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.principal.it_service.ITService.request_service_accounts")
+    def test_add_service_account_precheck_blocks_protected_group_before_it_call(self, sa_mock, mock_repl):
+        """Test that protected-group error surfaces before IT service-account validation."""
+        self.group.platform_default = True
+        self.group.admin_default = False
+        self.group.system = False
+        self.group.save()
+
+        sa_uuid = self.sa_client_ids[0]
+        url = reverse("v1_management:group-principals", kwargs={"uuid": self.group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"clientId": sa_uuid, "type": "service-account"}]}
+
+        response = client.post(url, test_data, format="json", **self.headers)
+
+        # Precheck caught it — IT service never called
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        sa_mock.assert_not_called()
+
+        # Restore
+        self.group.platform_default = False
+        self.group.save()
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True, NOTIFICATIONS_ENABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    @patch("core.kafka.RBACProducer.send_kafka_message")
+    def test_add_principals_notifications_deferred_via_on_commit(self, send_kafka_message, mock_request, mock_repl):
+        """Test that principal-added notifications are deferred via transaction.on_commit."""
+        test_group = Group.objects.create(name="test_notif_deferred", tenant=self.tenant)
+        url = reverse("v1_management:group-principals", kwargs={"uuid": test_group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch("management.group.view.transaction.on_commit") as mock_on_commit:
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # on_commit was called (notifications deferred, not fired inline)
+        self.assertTrue(mock_on_commit.called)
+
+    @override_settings(ATOMIC_RETRY_DISABLED=True)
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [{"username": "test_add_user", "user_id": -448717}],
+        },
+    )
+    def test_write_group_principals_re_fetches_group_under_transaction(self, mock_request, mock_repl):
+        """Test that _write_group_principals re-fetches the group inside the transaction."""
+        test_group = Group.objects.create(name="test_refetch", tenant=self.tenant)
+        url = reverse("v1_management:group-principals", kwargs={"uuid": test_group.uuid})
+        client = APIClient()
+        test_data = {"principals": [{"username": "test_add_user"}]}
+
+        with patch("management.group.view.GroupViewSet.get_object", wraps=None) as mock_get_object:
+            mock_get_object.return_value = test_group
+            response = client.post(url, test_data, format="json", **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # get_object called inside _write_group_principals (re-fetch under transaction)
+        mock_get_object.assert_called()
 
 
 @override_settings(REPLICATION_TO_RELATION_ENABLED=False, PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED=True)
