@@ -20,8 +20,6 @@
 import base64
 import json
 import logging
-import os
-import ssl
 from typing import NamedTuple, Optional
 from xml.parsers.expat import ExpatError
 
@@ -40,10 +38,6 @@ from management.tenant_service.tenant_service import TenantBootstrapService
 from prometheus_client import Counter
 from rest_framework import status
 from sentry_sdk import capture_exception
-from stompest.config import StompConfig
-from stompest.error import StompConnectionError
-from stompest.protocol import StompSpec
-from stompest.sync import Stomp
 
 from api.models import Tenant, User
 
@@ -51,27 +45,8 @@ logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 PROXY = PrincipalProxy()  # pylint: disable=invalid-name
 
-# Location of the CA, certificate and key files as defined in the
-# "it-umb-key-pair" secret and the "umb-certificates" volume mount.
-CA_LOC = "/opt/rbac/rbac/management/principal/umb_certificates/ca.crt"
-CERT_LOC = "/opt/rbac/rbac/management/principal/umb_certificates/tls.crt"
-KEY_LOC = "/opt/rbac/rbac/management/principal/umb_certificates/tls.key"
-
-
 LOCK_ID = 42  # For Keith, with Love
 KAFKA_CONSUMER_LOCK_ID = 43  # Guards Kafka consumer construction to prevent multi-worker join thrash
-
-# UMB Metric Messages
-METRIC_STOMP_MESSAGES_ACK_TOTAL = "stomp_messages_ack_total"
-METRIC_STOMP_MESSAGES_NACK_TOTAL = "stomp_messages_nack_total"
-stomp_messages_ack_total = Counter(
-    METRIC_STOMP_MESSAGES_ACK_TOTAL,
-    "Number of stomp UMB messages processed",
-)
-stomp_messages_nack_total = Counter(
-    METRIC_STOMP_MESSAGES_NACK_TOTAL,
-    "Number of stomp UMB messages that failed to be processed",
-)
 
 # KAFKA Metric Messages
 METRIC_KAFKA_MESSAGES_SUCCESS_TOTAL = "kafka_messages_success_total"
@@ -95,18 +70,6 @@ kafka_dry_run_messages_total = Counter(
 kafka_dry_run_errors_total = Counter(
     METRIC_KAFKA_DRY_RUN_ERRORS_TOTAL,
     "Number of Kafka messages that would have failed if not in dry-run mode",
-)
-
-# KAFKA Validation Mode Metrics
-METRIC_KAFKA_VALIDATION_SUCCESS_TOTAL = "kafka_validation_success_total"
-METRIC_KAFKA_VALIDATION_FALLBACK_TOTAL = "kafka_validation_fallback_total"
-kafka_validation_success_total = Counter(
-    METRIC_KAFKA_VALIDATION_SUCCESS_TOTAL,
-    "Number of times Kafka succeeded in validation mode (no UMB fallback needed)",
-)
-kafka_validation_fallback_total = Counter(
-    METRIC_KAFKA_VALIDATION_FALLBACK_TOTAL,
-    "Number of times UMB fallback was triggered in validation mode",
 )
 
 
@@ -173,25 +136,6 @@ def clean_tenants_principals():
         logger.info("clean_tenant_principals: Completed principal clean up for tenant %s.", tenant.tenant_name)
 
     logger.info("clean_tenant_principals: Principal cleanup complete for all tenants.")
-
-
-ssl_context = ssl.create_default_context()
-ssl_context.check_hostname = False
-# Cert verification of IT host is failing complains about self-signed cert
-# Since hot umb host it is within Red Hat network, we can trust the host
-ssl_context.verify_mode = ssl.CERT_NONE
-if os.path.isfile(CERT_LOC):
-    ssl_context.load_cert_chain(certfile=CERT_LOC, keyfile=KEY_LOC)
-
-# Load the CA's certificate in the context.
-if os.path.isfile(CA_LOC):
-    ssl_context.load_verify_locations(cafile=CA_LOC)
-
-CONFIG = StompConfig(
-    f"ssl://{settings.UMB_HOST}:{settings.UMB_PORT}", sslContext=ssl_context, version=StompSpec.VERSION_1_2
-)
-QUEUE = f"/queue/Consumer.{settings.SA_NAME}.users-subscription.VirtualTopic.canonical.user"
-UMB_CLIENT = Stomp(CONFIG)
 
 
 def retrieve_user_info_umb(message) -> User:
@@ -337,61 +281,6 @@ class _LockContention(Exception):
     """Raised when the advisory listener lock cannot be acquired."""
 
     pass
-
-
-def process_umb_event(frame, umb_client: Stomp, bootstrap_service: TenantBootstrapService) -> bool:
-    """
-    Process each umb frame.
-
-    If the process should continue to listen for more frames, return True. Otherwise, return False.
-
-    Message parsing happens outside the transaction (pure computation).  The DB
-    work (advisory lock + update_user) runs inside ``run_atomic_with_retry`` so
-    that serialization conflicts with concurrent API traffic are retried at the
-    correct (outermost) transaction boundary.
-    """
-    # --- Parse outside the transaction (no DB needed) ---
-    try:
-        body = frame.body.decode("utf-8", errors="ignore")
-        data_dict = xmltodict.parse(body)
-        canonical_message = data_dict.get("CanonicalMessage")
-        user = retrieve_user_info_umb(canonical_message)
-    except Exception as e:
-        logger.error("process_umb_event: Error parsing umb message: %s", str(e))
-        capture_exception(e)
-        umb_client.nack(frame)
-        stomp_messages_nack_total.inc()
-        return True
-
-    # --- DB work with proper outer retry ---
-    try:
-
-        def _db_work():
-            if not _lock_listener():
-                raise _LockContention()
-            if not user.is_active or settings.PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB:
-                bootstrap_service.update_user(user, ready_tenant=False)
-
-        run_atomic_with_retry(5, _db_work)
-        umb_client.ack(frame)
-        stomp_messages_ack_total.inc()
-    except _LockContention:
-        logger.info("process_umb_event: Another listener is running. Aborting.")
-        return False
-    except Exception as e:
-        logger.error("process_umb_event: Error processing umb message: %s", str(e))
-        capture_exception(e)
-        # Nack sends back to the broker that we failed to process this message.
-        # The broker may redeliver the message up to a certain number of retries.
-        # Eventually, the message is discarded, usually logged and sent to a DLQ.
-        # In other words, nacking is appropriate for messages which *may* be processable
-        # if retried.
-        # Either way, this lets us eventually proceed further in the queue,
-        # and should mark the message so it can be debugged later if needed.
-        umb_client.nack(frame)
-        stomp_messages_nack_total.inc()
-
-    return True
 
 
 class MessageProcessingResult(NamedTuple):
@@ -626,35 +515,6 @@ def process_kafka_message(
         return _send_to_dlq(message, e, dlq_producer, dry_run=False)
 
 
-def process_principal_events_from_umb(bootstrap_service: Optional[TenantBootstrapService] = None):
-    """Process principals events from UMB."""
-    logger.info("process_tenant_principal_events: Start processing principal events from umb.")
-    bootstrap_service = bootstrap_service or get_tenant_bootstrap_service(OutboxReplicator())
-    try:
-        # 1.1 or greater is required to support NACK, used when messages fail.
-        UMB_CLIENT.connect(versions=[StompSpec.VERSION_1_1, StompSpec.VERSION_1_2])
-        # We only have one subscription for this connection, so using a static ID header.
-        UMB_CLIENT.subscribe(QUEUE, {StompSpec.ACK_HEADER: StompSpec.ACK_CLIENT_INDIVIDUAL, StompSpec.ID_HEADER: "0"})
-    except StompConnectionError as e:
-        # Skip if already connected/subscribed
-        if not str(e).startswith(("Already connected", "Already subscribed")):
-            raise e
-
-    try:
-        while UMB_CLIENT.canRead(15):  # Check if queue is empty, 15 sec timeout
-            frame = UMB_CLIENT.receiveFrame()
-            logger.info(
-                "process_tenant_principal_events: Processing frame for %s",
-                frame.headers.get("esbWebUserId", "unknown"),
-            )
-            logger.debug("process_tenant_principal_events: Processing frame. info=%s", frame.info())
-            if not process_umb_event(frame, UMB_CLIENT, bootstrap_service):
-                break
-    finally:
-        UMB_CLIENT.disconnect()
-        logger.info("process_tenant_principal_events: Principal event processing finished.")
-
-
 def process_principal_events_from_kafka(
     bootstrap_service: Optional[TenantBootstrapService] = None, dry_run: bool = False
 ):
@@ -686,10 +546,9 @@ def process_principal_events_from_kafka(
 
     # Build Kafka consumer configuration
     # NOTE: This consumer runs periodically via Celery beat (every 60s) and consumes for 15s,
-    # creating a 45-second gap between consumption periods. This matches the UMB behavior
-    # where the consumer also ran periodically. For continuous consumption, a persistent
+    # creating a 45-second gap between consumption periods. For continuous consumption, a persistent
     # consumer (like launch-rbac-kafka-consumer) would be more appropriate, but this
-    # approach maintains compatibility with the existing UMB-based architecture.
+    # approach maintains compatibility with the existing architecture.
 
     # Include ENV_NAME in group_id to prevent offset interference across environments
     # In multi-env setups (staging, ephemeral, CI) that share a Kafka cluster, environments
@@ -713,7 +572,7 @@ def process_principal_events_from_kafka(
         "auto_offset_reset": "earliest",
         "enable_auto_commit": False,  # Manual commit for at-least-once semantics
         # No value_deserializer - leave as bytes to handle tombstones and UTF-8 errors in process_kafka_message
-        "consumer_timeout_ms": 15000,  # 15 second timeout per run, matches UMB behavior
+        "consumer_timeout_ms": 15000,  # 15 second timeout per run
         # Timeout tuning: 60s beat cycle + 15s drain must fit in session_timeout_ms without causing LeaveGroup
         "session_timeout_ms": settings.KAFKA_PRINCIPAL_CLEANUP_SESSION_TIMEOUT_MS,
         "heartbeat_interval_ms": settings.KAFKA_PRINCIPAL_CLEANUP_HEARTBEAT_INTERVAL_MS,
