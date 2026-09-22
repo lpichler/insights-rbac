@@ -31,6 +31,7 @@ from management.policy.model import Policy
 from management.principal.cleaner import (
     METRIC_KAFKA_MESSAGES_FAILURE_TOTAL,
     METRIC_KAFKA_MESSAGES_SUCCESS_TOTAL,
+    MessageProcessingResult,
     clean_tenant_principals,
     process_principal_events_from_kafka,
 )
@@ -354,6 +355,32 @@ class PrincipalKafkaTests(IdentityRequest):
         after = REGISTRY.get_sample_value(METRIC_KAFKA_MESSAGES_SUCCESS_TOTAL)
         self.assertTrue(before == after or before is None and after is None)
         consumer_instance.close.assert_called_once()
+
+    @patch("management.principal.cleaner.process_kafka_message")
+    @patch("management.principal.cleaner.time.monotonic")
+    @patch("management.principal.cleaner.KafkaConsumer")
+    @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC", "test-topic")
+    def test_kafka_consumer_stops_after_drain_window(self, consumer_mock, monotonic_mock, process_mock):
+        """Busy topics must still stop after the wall-clock drain budget so Celery can re-check Unleash."""
+        process_mock.return_value = MessageProcessingResult(should_continue=True, success=True)
+
+        messages = [create_mock_kafka_message(KAFKA_MESSAGE_BODY, offset=i) for i in range(10)]
+        consumer_instance = MagicMock()
+        consumer_instance.__iter__.return_value = iter(messages)
+        consumer_mock.return_value = consumer_instance
+
+        # 1) deadline = monotonic() + 15s
+        # 2) first message: still inside window -> process
+        # 3) second message: past deadline -> break without processing further
+        monotonic_mock.side_effect = [1000.0, 1000.0, 1015.0]
+
+        process_principal_events_from_kafka()
+
+        process_mock.assert_called_once()
+        consumer_instance.commit.assert_called_once()
+        consumer_instance.close.assert_called_once()
+        # consumer_timeout_ms stays aligned with the wall-clock budget
+        self.assertEqual(consumer_mock.call_args[1]["consumer_timeout_ms"], 15000)
 
     @patch("management.principal.cleaner.KafkaConsumer")
     @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC", "test-topic")

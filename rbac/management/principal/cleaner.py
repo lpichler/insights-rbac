@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import ssl
+import time
 from typing import NamedTuple, Optional
 from xml.parsers.expat import ExpatError
 
@@ -60,6 +61,9 @@ KEY_LOC = "/opt/rbac/rbac/management/principal/umb_certificates/tls.key"
 
 LOCK_ID = 42  # For Keith, with Love
 KAFKA_CONSUMER_LOCK_ID = 43  # Guards Kafka consumer construction to prevent multi-worker join thrash
+# Per-cycle drain budget. consumer_timeout_ms alone only stops after idle polls; a busy/backlogged
+# topic would otherwise keep the Celery task running indefinitely and block Unleash re-checks.
+KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS = 15000
 
 # UMB Metric Messages
 METRIC_STOMP_MESSAGES_ACK_TOTAL = "stomp_messages_ack_total"
@@ -713,7 +717,7 @@ def process_principal_events_from_kafka(
         "auto_offset_reset": "earliest",
         "enable_auto_commit": False,  # Manual commit for at-least-once semantics
         # No value_deserializer - leave as bytes to handle tombstones and UTF-8 errors in process_kafka_message
-        "consumer_timeout_ms": 15000,  # 15 second timeout per run, matches UMB behavior
+        "consumer_timeout_ms": KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS,  # idle-poll stop; matches UMB
         # Timeout tuning: 60s beat cycle + 15s drain must fit in session_timeout_ms without causing LeaveGroup
         "session_timeout_ms": settings.KAFKA_PRINCIPAL_CLEANUP_SESSION_TIMEOUT_MS,
         "heartbeat_interval_ms": settings.KAFKA_PRINCIPAL_CLEANUP_HEARTBEAT_INTERVAL_MS,
@@ -757,8 +761,19 @@ def process_principal_events_from_kafka(
         consumer = KafkaConsumer(topic, **kafka_config)
         logger.info("process_principal_events_from_kafka: Connected to Kafka, subscribed to topic: %s", topic)
 
+        # Wall-clock budget so a busy topic cannot keep this Celery task alive past the drain window.
+        # consumer_timeout_ms alone only ends the iterator after idle polls.
+        drain_deadline = time.monotonic() + (KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS / 1000.0)
+
         # Process messages
         for message in consumer:
+            if time.monotonic() >= drain_deadline:
+                logger.info(
+                    "process_principal_events_from_kafka: Drain window of %dms elapsed, stopping cycle.",
+                    KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS,
+                )
+                break
+
             mode_suffix = " (DRY RUN)" if dry_run else ""
             logger.info(
                 "process_principal_events_from_kafka: Processing message from partition %d at offset %d%s",
