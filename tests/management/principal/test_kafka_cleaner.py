@@ -374,7 +374,8 @@ class PrincipalKafkaTests(IdentityRequest):
         # 3) second message: past deadline -> break without processing further
         monotonic_mock.side_effect = [1000.0, 1000.0, 1015.0]
 
-        process_principal_events_from_kafka()
+        result = process_principal_events_from_kafka()
+        self.assertIsNone(result)
 
         process_mock.assert_called_once()
         consumer_instance.commit.assert_called_once()

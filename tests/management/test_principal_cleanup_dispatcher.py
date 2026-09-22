@@ -503,3 +503,38 @@ class PrincipalCleanupDispatcherTest(TestCase):
             # Verify warnings were logged
             mock_logger.error.assert_any_call("Unknown principal cleanup mode: invalid_mode, defaulting to UMB")
             mock_logger.warning.assert_any_call("Fallback to UMB failed: UMB_JOB_ENABLED is False")
+
+    @patch("management.tasks.settings")
+    @patch("management.tasks.logger")
+    def test_subsequent_invocation_rechecks_unleash_flag(self, mock_logger, mock_settings):
+        """Each invocation of principal_cleanup_via_message_bus re-checks get_principal_cleanup_mode().
+
+        The drain timeout in process_principal_events_from_kafka ensures the Celery task
+        returns promptly so the next beat invocation can re-evaluate the Unleash flag.
+        This test verifies that two consecutive calls each query the flag independently,
+        enabling runtime mode switching without worker restart.
+        """
+        from management.tasks import principal_cleanup_via_message_bus
+
+        for key, value in self.default_settings.items():
+            setattr(mock_settings, key, value)
+
+        with (
+            patch("feature_flags.FEATURE_FLAGS") as mock_ff,
+            patch("management.principal.cleaner.process_principal_events_from_umb") as mock_umb,
+            patch("management.principal.cleaner.process_principal_events_from_kafka") as mock_kafka,
+        ):
+
+            # First invocation: kafka_active mode
+            mock_ff.get_principal_cleanup_mode.return_value = "kafka_active"
+            principal_cleanup_via_message_bus()
+
+            # Second invocation: mode changed to umb_only via Unleash
+            mock_ff.get_principal_cleanup_mode.return_value = "umb_only"
+            principal_cleanup_via_message_bus()
+
+            # Verify the flag was checked on each invocation
+            self.assertEqual(mock_ff.get_principal_cleanup_mode.call_count, 2)
+            # First call routed to Kafka, second to UMB
+            mock_kafka.assert_called_once_with(dry_run=False)
+            mock_umb.assert_called_once()
