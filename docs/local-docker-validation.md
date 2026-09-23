@@ -38,7 +38,9 @@ hard-coded upstream repositories are
 
 When RBAC is selected from a PR URL, the command creates a temporary worktree,
 checks out the PR head, and rebases it onto the current upstream `master`
-before building the image. If that rebase conflicts, the command stops before
+before building the image. When the PR branch contains merge commits, the
+command uses a merge instead of a rebase to preserve manual conflict
+resolutions. If the rebase or merge conflicts, the command stops before
 starting the stack and leaves the conflicting worktree path in its error output.
 
 For a local source, the command prompts for the checkout directory. Press

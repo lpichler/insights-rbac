@@ -299,10 +299,13 @@ start_rbac_worktree() {
   # Create a temporary detached worktree for non-local RBAC sources
   # (upstream, PR, or commit SHA), copy the current orchestration
   # scripts into it, and re-invoke up-full.sh from that checkout.
+  # For PR sources, rebases onto upstream master. When the PR branch
+  # contains merge commits, uses merge instead of rebase to preserve
+  # manual conflict resolutions.
   [[ "${RBAC_SOURCE_KIND}" != local ]] || return 0
   [[ -z "${RBAC_PR_WORKTREE:-}" ]] || return 0
 
-  local fetch_ref repository worktree_prefix pr_revision master_revision
+  local fetch_ref repository worktree_prefix pr_revision master_revision merge_base_rev
   case "${RBAC_SOURCE_KIND}" in
     upstream)
       fetch_ref=HEAD
@@ -335,10 +338,21 @@ start_rbac_worktree() {
     log-info "Fetching RBAC upstream master from ${repository}..."
     git -C "${REPO_ROOT}" fetch --no-tags "${repository}" master
     master_revision="$(git -C "${REPO_ROOT}" rev-parse FETCH_HEAD)"
-    log-info "Rebasing RBAC ${RBAC_SOURCE_LABEL} onto upstream master..."
-    if ! git -C "${pr_worktree}" rebase "${master_revision}"; then
-      log-err "RBAC ${RBAC_SOURCE_LABEL} conflicts with upstream master; stopped at ${pr_worktree}."
-      exit 1
+    merge_base_rev="$(git -C "${pr_worktree}" merge-base "${master_revision}" HEAD 2>/dev/null || true)"
+    if [[ -n "${merge_base_rev}" ]] && \
+       git -C "${pr_worktree}" log --merges --oneline "${merge_base_rev}..HEAD" 2>/dev/null | grep -q .; then
+      log-info "PR branch contains merge commits; using merge to preserve manual resolutions."
+      git -C "${pr_worktree}" checkout --detach "${master_revision}" >/dev/null 2>&1
+      if ! git -C "${pr_worktree}" merge --no-edit "${pr_revision}"; then
+        log-err "RBAC ${RBAC_SOURCE_LABEL} conflicts with upstream master; stopped at ${pr_worktree}."
+        exit 1
+      fi
+    else
+      log-info "Rebasing RBAC ${RBAC_SOURCE_LABEL} onto upstream master..."
+      if ! git -C "${pr_worktree}" rebase "${master_revision}"; then
+        log-err "RBAC ${RBAC_SOURCE_LABEL} conflicts with upstream master; stopped at ${pr_worktree}."
+        exit 1
+      fi
     fi
   fi
 

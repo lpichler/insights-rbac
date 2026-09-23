@@ -22,6 +22,9 @@ container_names() {
 }
 
 check_containers() {
+  # Verify that all containers matching a name pattern are running and
+  # healthy. Treats exited one-shot jobs (migrate, init, setup) with
+  # exit code 0 as successfully completed.
   local pattern="$1"
   local label="$2"
   local names name state health exit_code
