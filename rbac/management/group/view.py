@@ -596,7 +596,8 @@ class GroupViewSet(
             group.principals.add(principal)
             new_principals.append(principal)
             transaction.on_commit(
-                partial(group_principal_change_notification_handler, self.request.user, group, username, "added")
+                partial(group_principal_change_notification_handler, self.request.user, group, username, "added"),
+                robust=True,
             )
         return group, new_principals
 
@@ -681,7 +682,8 @@ class GroupViewSet(
                     group,
                     SERVICE_ACCOUNT_USERNAME_FORMAT.format(clientId=client_id),
                     "added",
-                )
+                ),
+                robust=True,
             )
 
         return group, new_service_accounts
