@@ -17,13 +17,46 @@
 """Backfill remote principals in SpiceDB via TenantMapping update_user."""
 
 import copy
+from functools import wraps
+from typing import Optional
 
 from django.conf import settings
-from management.atomic_transactions import atomic
+from management.atomic_transactions import (
+    atomic as atomic_serializable,
+    atomic_with_retry as atomic_serializable_with_retry,
+    is_atomic_disabled,
+)
 from management.models import Principal
+from pgtransaction import transaction
 
 
-@atomic
+def backfill_atomic(retries: Optional[int] = None):
+    """Transform functions that need to be SERIALIZABLE transactions if and only if backfill_remote_principal is."""
+
+    def real_decorator():
+        if is_atomic_disabled():
+            return transaction.atomic()
+
+        if settings.PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED:
+            if retries is not None:
+                return atomic_serializable_with_retry(retries=retries)
+
+            return atomic_serializable
+        else:
+            return transaction.atomic(retry=retries)
+
+    def decorator(fn):
+        # We have to delay evaluation of the decorator because settings can change during tests.
+        @wraps(fn)
+        def wrapped(*args, **kwargs):
+            return real_decorator()(fn)(*args, **kwargs)
+
+        return wrapped
+
+    return decorator
+
+
+@backfill_atomic()
 def backfill_remote_principal(bootstrap_service, user, tenant):
     """Backfill a single user's TenantMapping membership via update_user.
 
