@@ -620,6 +620,9 @@ class PrincipalKafkaTests(IdentityRequest):
         process_principal_events_from_kafka(dry_run=True)
         after_dry_run = REGISTRY.get_sample_value("kafka_dry_run_messages_total") or 0
 
+        # Dry-run must not call BOP (payload-only validation)
+        proxy_mock.assert_not_called()
+
         # Verify principal still exists (dry-run didn't delete it)
         self.assertTrue(Principal.objects.filter(username=principal_name).exists())
         self.assertEqual(Principal.objects.count(), initial_principal_count)
@@ -906,6 +909,8 @@ class PrincipalKafkaTests(IdentityRequest):
 
         # Verify update_user was NOT called
         mock_service.update_user.assert_not_called()
+        # Dry-run skips BOP as well
+        proxy_mock.assert_not_called()
 
     @patch(
         "management.principal.proxy.PrincipalProxy._request_principals",
