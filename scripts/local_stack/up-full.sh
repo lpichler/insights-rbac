@@ -318,9 +318,8 @@ resolve_generated_v2_openapi_conflicts() {
 
   has_only_generated_v2_openapi_conflicts "${worktree}" || return 1
   log-warn "Resolving generated V2 OpenAPI rebase conflicts from TypeSpec source..."
-  git -C "${worktree}" checkout --theirs -- docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml
-  git -C "${worktree}" add docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml
-  GIT_EDITOR=true git -C "${worktree}" rebase --continue
+  git -C "${worktree}" checkout --theirs -- docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml || return 1
+  git -C "${worktree}" add docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml || return 1
 }
 
 regenerate_v2_openapi_spec() {
@@ -341,7 +340,7 @@ rebase_rbac_pr_worktree() {
     if ! resolve_generated_v2_openapi_conflicts "${worktree}"; then
       return 1
     fi
-    if ! git -C "${worktree}" rebase --show-current-patch >/dev/null 2>&1; then
+    if GIT_EDITOR=true git -C "${worktree}" rebase --continue; then
       return 0
     fi
   done
