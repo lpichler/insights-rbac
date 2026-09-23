@@ -680,9 +680,26 @@ IT_TOKEN_JKWS_CACHE_LIFETIME = ENVIRONMENT.int("IT_TOKEN_JKWS_CACHE_LIFETIME", d
 
 PRINCIPAL_USER_DOMAIN = ENVIRONMENT.get_value("PRINCIPAL_USER_DOMAIN", default="localhost")
 
-# Settings for enabling/disabling principal cleanup job via Kafka
+# Settings for enabling/disabling deletion in principal cleanup job via UMB
+PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB", default=False)
+PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_UPDATE_ENABLED_UMB", default=False)
+UMB_JOB_ENABLED = ENVIRONMENT.bool("UMB_JOB_ENABLED", default=True)
+
+UMB_HOST = ENVIRONMENT.get_value("UMB_HOST", default="localhost")
+UMB_PORT = ENVIRONMENT.get_value("UMB_PORT", default="61612")
+
+# Settings for enabling/disabling deletion in principal cleanup job via Kafka
+PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA", default=False)
 PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA = ENVIRONMENT.bool("PRINCIPAL_CLEANUP_UPDATE_ENABLED_KAFKA", default=False)
 KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED = ENVIRONMENT.bool("KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED", default=True)
+
+# Validate Kafka principal cleanup configuration at startup
+# Fail fast if Kafka cleanup is enabled but topic is not configured
+if PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA and not KAFKA_PRINCIPAL_CLEANUP_TOPIC:
+    raise ValueError(
+        "PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA is True but KAFKA_PRINCIPAL_CLEANUP_TOPIC is not configured. "
+        "Set KAFKA_PRINCIPAL_CLEANUP_TOPIC to a valid Kafka topic name or disable Kafka cleanup."
+    )
 
 # Service account name
 SA_NAME = ENVIRONMENT.get_value("SA_NAME", default="nonprod-hcc-rbac")
@@ -741,7 +758,7 @@ WORKSPACE_ACCESS_CHECK_V2_ENABLED = ENVIRONMENT.bool("WORKSPACE_ACCESS_CHECK_V2_
 USE_ROLE_BINDING_VIEW_PERMISSION = ENVIRONMENT.bool("USE_ROLE_BINDING_VIEW_PERMISSION", default=True)
 # When True, tenant-level role binding access checks use Kessel instead of org-admin middleware
 KESSEL_TENANT_AUTH_ENABLED = ENVIRONMENT.bool("KESSEL_TENANT_AUTH_ENABLED", default=False)
-READ_ONLY_API_MODE = ENVIRONMENT.get_value("READ_ONLY_API_MODE", default=False)
+READ_ONLY_API_MODE = ENVIRONMENT.bool("READ_ONLY_API_MODE", default=False)
 V2_EDIT_API_ENABLED = ENVIRONMENT.bool("V2_EDIT_API_ENABLED", default=False)
 V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES = [
     app.strip()
