@@ -295,6 +295,60 @@ save_local_source_paths() {
   log-info "Saved local source paths to ${LOCAL_STACK_CONFIG_FILE}"
 }
 
+has_only_generated_v2_openapi_conflicts() {
+  local worktree="$1" conflicted_file found_conflict=false
+
+  while IFS= read -r conflicted_file; do
+    [[ -n "${conflicted_file}" ]] || continue
+    case "${conflicted_file}" in
+      docs/source/specs/v2/openapi.json|docs/source/specs/v2/openapi.yaml)
+        found_conflict=true
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  done < <(git -C "${worktree}" diff --name-only --diff-filter=U)
+
+  [[ "${found_conflict}" == true ]]
+}
+
+resolve_generated_v2_openapi_conflicts() {
+  local worktree="$1"
+
+  has_only_generated_v2_openapi_conflicts "${worktree}" || return 1
+  log-warn "Resolving generated V2 OpenAPI rebase conflicts from TypeSpec source..."
+  git -C "${worktree}" checkout --theirs -- docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml
+  git -C "${worktree}" add docs/source/specs/v2/openapi.json docs/source/specs/v2/openapi.yaml
+  GIT_EDITOR=true git -C "${worktree}" rebase --continue
+}
+
+regenerate_v2_openapi_spec() {
+  local worktree="$1"
+
+  log-info "Regenerating V2 OpenAPI artifacts from merged TypeSpec source..."
+  make -C "${worktree}" generate_v2_spec
+}
+
+rebase_rbac_pr_worktree() {
+  local worktree="$1" master_revision="$2"
+
+  if git -C "${worktree}" rebase "${master_revision}"; then
+    return 0
+  fi
+
+  while git -C "${worktree}" rebase --show-current-patch >/dev/null 2>&1; do
+    if ! resolve_generated_v2_openapi_conflicts "${worktree}"; then
+      return 1
+    fi
+    if ! git -C "${worktree}" rebase --show-current-patch >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 start_rbac_worktree() {
   # Create a temporary detached worktree for non-local RBAC sources
   # (upstream, PR, or commit SHA), copy the current orchestration
@@ -349,11 +403,12 @@ start_rbac_worktree() {
       fi
     else
       log-info "Rebasing RBAC ${RBAC_SOURCE_LABEL} onto upstream master..."
-      if ! git -C "${pr_worktree}" rebase "${master_revision}"; then
+      if ! rebase_rbac_pr_worktree "${pr_worktree}" "${master_revision}"; then
         log-err "RBAC ${RBAC_SOURCE_LABEL} conflicts with upstream master; stopped at ${pr_worktree}."
         exit 1
       fi
     fi
+    regenerate_v2_openapi_spec "${pr_worktree}"
   fi
 
   # Older PR branches may predate the local full-stack helper directory and
