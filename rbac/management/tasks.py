@@ -90,18 +90,25 @@ def principal_cleanup_via_kafka():
 
 
 @shared_task
-def principal_cleanup_umb_tick():
+def principal_cleanup_umb_tick(mode: Optional[str] = None):
     """
     Mode-aware UMB principal-cleanup tick (scheduled independently from Kafka).
 
     Runs when Unleash mode is umb_only or kafka_shadow (or unknown → UMB default).
     Skips for kafka_validation / kafka_active (Kafka tick owns those paths).
+
+    Args:
+        mode: Pre-resolved cleanup mode. When None the mode is read from Unleash
+              at call time (the default for independent beat schedules). Callers
+              that dispatch multiple ticks sequentially should resolve the mode
+              once and pass it in to avoid the flag flipping between calls.
     """
     from feature_flags import FEATURE_FLAGS
     from management.principal.cleaner import process_principal_events_from_umb
     from sentry_sdk import capture_exception
 
-    mode = FEATURE_FLAGS.get_principal_cleanup_mode()
+    if mode is None:
+        mode = FEATURE_FLAGS.get_principal_cleanup_mode()
     logger.info("Principal cleanup UMB tick: mode=%s", mode)
 
     if mode in ("kafka_validation", "kafka_active"):
@@ -136,7 +143,7 @@ def principal_cleanup_umb_tick():
 
 
 @shared_task
-def principal_cleanup_kafka_tick():
+def principal_cleanup_kafka_tick(mode: Optional[str] = None):
     """
     Mode-aware Kafka principal-cleanup tick (scheduled independently from UMB).
 
@@ -144,6 +151,12 @@ def principal_cleanup_kafka_tick():
     - kafka_validation: write, with UMB fallback on failure
     - kafka_active: write
     - umb_only / unknown: skip
+
+    Args:
+        mode: Pre-resolved cleanup mode. When None the mode is read from Unleash
+              at call time (the default for independent beat schedules). Callers
+              that dispatch multiple ticks sequentially should resolve the mode
+              once and pass it in to avoid the flag flipping between calls.
     """
     from feature_flags import FEATURE_FLAGS
     from management.principal.cleaner import (
@@ -154,7 +167,8 @@ def principal_cleanup_kafka_tick():
     )
     from sentry_sdk import capture_exception
 
-    mode = FEATURE_FLAGS.get_principal_cleanup_mode()
+    if mode is None:
+        mode = FEATURE_FLAGS.get_principal_cleanup_mode()
     logger.info("Principal cleanup Kafka tick: mode=%s", mode)
 
     if mode == "umb_only":
@@ -248,15 +262,17 @@ def principal_cleanup_via_message_bus():
     mode = FEATURE_FLAGS.get_principal_cleanup_mode()
     logger.info(f"Principal cleanup mode: {mode}")
 
+    # Resolve mode once and pass it to ticks so the Unleash flag cannot flip
+    # between sequential calls (see PR #3433 review).
     if mode == "kafka_shadow":
         logger.info("Shadow mode: processing via UMB (active) and Kafka (dry-run)")
-        principal_cleanup_umb_tick()
-        principal_cleanup_kafka_tick()
+        principal_cleanup_umb_tick(mode=mode)
+        principal_cleanup_kafka_tick(mode=mode)
     elif mode in ("kafka_validation", "kafka_active"):
-        principal_cleanup_kafka_tick()
+        principal_cleanup_kafka_tick(mode=mode)
     else:
         # umb_only and unknown
-        principal_cleanup_umb_tick()
+        principal_cleanup_umb_tick(mode=mode)
 
 
 @shared_task
