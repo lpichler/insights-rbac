@@ -556,9 +556,9 @@ KAFKA_PRINCIPAL_CLEANUP_MAX_POLL_INTERVAL_MS = ENVIRONMENT.get_value(
 KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED = ENVIRONMENT.bool(
     "KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED", default=True
 )
-# Wall-clock budget per Kafka principal-cleanup Celery cycle. Sized to the 60s beat interval so
-# a dedicated Kafka schedule can use a full minute (UMB and Kafka are scheduled separately).
-KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS = ENVIRONMENT.int("KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS", default=60000)
+# Wall-clock budget per Kafka principal-cleanup Celery cycle. Keep below the 60s beat interval
+# with headroom for consumer setup and shutdown.
+KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS = ENVIRONMENT.int("KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS", default=50000)
 
 PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED = EPH_ENV
 
