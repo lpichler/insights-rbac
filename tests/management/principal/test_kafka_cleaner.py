@@ -360,6 +360,7 @@ class PrincipalKafkaTests(IdentityRequest):
     @patch("management.principal.cleaner.time.monotonic")
     @patch("management.principal.cleaner.KafkaConsumer")
     @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC", "test-topic")
+    @patch("management.principal.cleaner.settings.KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS", 15000)
     def test_kafka_consumer_stops_after_drain_window(self, consumer_mock, monotonic_mock, process_mock):
         """Busy topics must still stop after the wall-clock drain budget so Celery can re-check Unleash."""
         process_mock.return_value = MessageProcessingResult(should_continue=True, success=True)
