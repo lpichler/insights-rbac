@@ -21,6 +21,7 @@ from functools import wraps
 from typing import Optional
 
 from django.conf import settings
+from django.db import transaction as django_transaction
 from management.atomic_transactions import (
     atomic as atomic_serializable,
     atomic_with_retry as atomic_serializable_with_retry,
@@ -31,11 +32,23 @@ from pgtransaction import transaction
 
 
 def backfill_atomic(retries: Optional[int] = None):
-    """Transform functions that need to be SERIALIZABLE transactions if and only if backfill_remote_principal is."""
+    """Transform functions that need to be SERIALIZABLE transactions if and only if backfill_remote_principal is.
+
+    Selects a transaction wrapper at call time based on the current settings:
+    - When ``ATOMIC_RETRY_DISABLED`` is true, uses plain Django ``transaction.atomic()``
+      (avoids ``PGTRANSACTION_RETRY`` side-effects in test/disabled mode).
+    - When ``PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED`` is true, uses a
+      SERIALIZABLE transaction (with optional retries).
+    - Otherwise, uses a regular pgtransaction atomic (no SERIALIZABLE isolation).
+
+    Args:
+        retries: Optional number of retry attempts for serialization failures.
+    """
 
     def real_decorator():
+        """Return the appropriate transaction wrapper based on current settings."""
         if is_atomic_disabled():
-            return transaction.atomic()
+            return django_transaction.atomic()
 
         if settings.PRINCIPAL_BACKFILL_AUTHORITATIVE_ENABLED:
             if retries is not None:
@@ -46,9 +59,12 @@ def backfill_atomic(retries: Optional[int] = None):
             return transaction.atomic(retry=retries)
 
     def decorator(fn):
+        """Wrap ``fn`` so the transaction wrapper is evaluated on each call."""
+
         # We have to delay evaluation of the decorator because settings can change during tests.
         @wraps(fn)
         def wrapped(*args, **kwargs):
+            """Execute ``fn`` inside the dynamically-selected transaction wrapper."""
             return real_decorator()(fn)(*args, **kwargs)
 
         return wrapped
