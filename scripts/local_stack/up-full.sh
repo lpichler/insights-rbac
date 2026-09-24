@@ -391,9 +391,22 @@ start_rbac_worktree() {
     log-info "Fetching RBAC upstream master from ${repository}..."
     git -C "${REPO_ROOT}" fetch --no-tags "${repository}" master
     master_revision="$(git -C "${REPO_ROOT}" rev-parse FETCH_HEAD)"
-    merge_base_rev="$(git -C "${pr_worktree}" merge-base "${master_revision}" HEAD 2>/dev/null || true)"
-    if [[ -n "${merge_base_rev}" ]] && \
-       git -C "${pr_worktree}" log --merges --oneline "${merge_base_rev}..HEAD" 2>/dev/null | grep -q .; then
+    if [[ "$(git -C "${REPO_ROOT}" rev-parse --is-shallow-repository)" == true ]]; then
+      git -C "${REPO_ROOT}" fetch --unshallow --no-tags "${repository}" || {
+        log-err "Cannot unshallow ${REPO_ROOT}; merge-commit detection needs full history."
+        exit 1
+      }
+    fi
+    if ! merge_base_rev="$(git -C "${pr_worktree}" merge-base "${master_revision}" HEAD)"; then
+      log-err "Cannot find a merge base between RBAC ${RBAC_SOURCE_LABEL} and upstream master."
+      exit 1
+    fi
+    local merge_count
+    if ! merge_count="$(git -C "${pr_worktree}" rev-list --merges --count "${merge_base_rev}..HEAD")"; then
+      log-err "Cannot inspect RBAC ${RBAC_SOURCE_LABEL} history for merge commits."
+      exit 1
+    fi
+    if (( merge_count > 0 )); then
       log-info "PR branch contains merge commits; using merge to preserve manual resolutions."
       git -C "${pr_worktree}" checkout --detach "${master_revision}" >/dev/null 2>&1
       if ! git -C "${pr_worktree}" merge --no-edit "${pr_revision}"; then
