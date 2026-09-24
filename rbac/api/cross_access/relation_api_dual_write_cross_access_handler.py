@@ -17,22 +17,21 @@
 
 """Class to handle Dual Write API related operations."""
 
-import logging
 from typing import Iterable, Optional
 
 from management.atomic_transactions import atomic
 from management.group.relation_api_dual_write_subject_handler import RelationApiDualWriteSubjectHandler
 from management.models import Workspace
-from management.permission.scope_service import ImplicitResourceService, Scope, TenantScopeResources
+from management.permission.scope_service import CONCRETE_SCOPES, ImplicitResourceService, Scope, TenantScopeResources
 from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
     WorkspaceEvent,
     WorkspaceEventStream,
+    raise_dual_write_exception,
 )
 from management.role.model import BindingMapping, Role
 from management.role.v2_model import SeededRoleV2
@@ -41,8 +40,6 @@ from management.subject import SubjectType
 from management.tenant_mapping.v2_activation import TenantVersion
 
 from api.models import CrossAccountRequest, Tenant
-
-logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
 class _LocalReplicator(RelationReplicator):
@@ -93,12 +90,13 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(
-                f"Error initializing RelationApiDualWriteCrossAccessHandler for request id: "
-                f"{self.cross_account_request.request_id}"
+            raise_dual_write_exception(
+                e,
+                context=(
+                    "Error initializing RelationApiDualWriteCrossAccessHandler for request id: "
+                    f"{self.cross_account_request.request_id}"
+                ),
             )
-
-            raise DualWriteException(e)
 
     def _replicate(self):
         if not self.replication_enabled():
@@ -133,8 +131,7 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
                 ),
             )
         except Exception as e:
-            logger.error("Error occurred in cross account replicate event", e)
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Error occurred in cross account replicate event")
 
     def replicate(self):
         """Replicate generated relations."""
@@ -158,8 +155,9 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
             skip_scope_validation=True,
         )
 
-    def _add_car_roles_v1(self, roles: set[Role]):
+    def _add_car_roles_v1(self, roles: Iterable[Role]):
         self._expect_v1_tenant()
+        roles = self._with_system_roles_for_share(roles)
 
         def add_principal_to_binding(mapping: BindingMapping):
             self.relations_to_add.append(mapping.assign_user_to_bindings(user_id, source_key))
@@ -168,18 +166,19 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
         source_key = self._source_key()
 
         for role in roles:
-            self._update_mapping_for_system_role(
-                role,
-                scope=(self._resource_service.scope_for_role(role)),
-                update_mapping=add_principal_to_binding,
-                create_default_mapping_for_system_role=(
-                    lambda resource: self._create_default_mapping_for_system_role(
-                        system_role=role,
-                        resource=resource,
-                        users={str(source_key): user_id},
-                    )
-                ),
-            )
+            for scope in self._resource_service.binding_scopes_for_role(role):
+                self._update_mapping_for_system_role(
+                    role,
+                    scope=scope,
+                    update_mapping=add_principal_to_binding,
+                    create_default_mapping_for_system_role=(
+                        lambda resource: self._create_default_mapping_for_system_role(
+                            system_role=role,
+                            resource=resource,
+                            users={str(source_key): user_id},
+                        )
+                    ),
+                )
 
     @atomic
     def _add_car_roles_v2(self, roles: set[Role]):
@@ -190,8 +189,11 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
 
         principal = Principal.objects.get(user_id=self._user_id())
 
+        # We do not need to lock the roles here, since we're in a SERIALIZABLE transaction (and so is seeding each
+        # role).
         for role in roles:
-            v1_roles_by_scope.setdefault(self._resource_service.scope_for_role(role), set()).add(role)
+            for scope in self._resource_service.binding_scopes_for_role(role):
+                v1_roles_by_scope.setdefault(scope, set()).add(role)
 
         for scope, v1_roles in v1_roles_by_scope.items():
             resource = scope_resources.resource_for(scope)
@@ -243,8 +245,10 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
             if removal is not None:
                 self.relations_to_remove.append(removal)
 
+        # We don't need to lock the roles, since we will handle any possible scope (without actually looking at the
+        # roles).
         for role in roles:
-            for scope in Scope:
+            for scope in CONCRETE_SCOPES:
                 self._update_mapping_for_system_role(
                     role,
                     scope=scope,
@@ -261,7 +265,9 @@ class RelationApiDualWriteCrossAccessHandler(RelationApiDualWriteSubjectHandler)
 
         v2_roles_to_remove: set[SeededRoleV2] = SeededRoleV2.for_v1_roles(roles)
 
-        for scope in Scope:
+        # We don't need to lock the roles, since we will handle any possible scope (without actually looking at the
+        # roles).
+        for scope in CONCRETE_SCOPES:
             resource = scope_resources.resource_for(scope)
 
             if resource.resource_type[0] != "rbac":

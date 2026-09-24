@@ -25,17 +25,17 @@ from management.group.platform import GlobalPolicyIdService
 from management.group.relation_api_dual_write_subject_handler import RelationApiDualWriteSubjectHandler
 from management.models import Workspace
 from management.permission.scope_service import (
+    CONCRETE_SCOPES,
     ImplicitResourceService,
-    Scope,
     TenantScopeResources,
 )
 from management.principal.model import Principal
 from management.relation_replicator.relation_replicator import (
-    DualWriteException,
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
+    raise_dual_write_exception,
 )
 from management.relation_replicator.types import RelationTuple
 from management.role.model import BindingMapping, Role
@@ -93,8 +93,7 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
                 replicator=replicator,
             )
         except Exception as e:
-            logger.error(f"Initialization of RelationApiDualWriteGroupHandler failed: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context="Initialization of RelationApiDualWriteGroupHandler")
 
     def _generate_member_relations(self):
         """Generate user-groups relations."""
@@ -142,11 +141,24 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
         if self._expected_empty_relation_reason:
             logger.info(f"[Dual Write] Skipping empty replication event. {self._expected_empty_relation_reason}")
             return
-        try:
-            # Deduplicate relations_to_add to avoid duplicates when generate_relations
-            # is called multiple times with the same data
-            deduplicated_add = self._deduplicate_subject_relations(self.relations_to_add, handler_name="Group")
 
+        # Deduplicate relations_to_add to avoid duplicates when generate_relations
+        # is called multiple times with the same data
+        deduplicated_add = self._deduplicate_subject_relations(self.relations_to_add, handler_name="Group")
+
+        # Guard: skip empty events so they don't reach the outbox as spurious warnings.
+        # This can happen when all roles in a group operation have no binding mappings.
+        if not deduplicated_add and not self.relations_to_remove:
+            logger.info(
+                "[Dual Write] Skipping empty replication event for group(%s): '%s'. "
+                "Both add and remove relations are empty. event_type='%s'",
+                self.group.uuid,
+                self.group.name,
+                self.event_type,
+            )
+            return
+
+        try:
             self._replicator.replicate(
                 ReplicationEvent(
                     event_type=self.event_type,
@@ -157,8 +169,7 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
                 ),
             )
         except Exception as e:
-            logger.error(f"Replication event failed for group: {self.group.uuid}: {e}")
-            raise DualWriteException(e)
+            raise_dual_write_exception(e, context=f"Replication event for group {self.group.uuid}")
 
     def generate_relations_reset_roles(
         self, roles: Iterable[Role], remove_default_access_from: Optional[TenantMapping] = None
@@ -182,13 +193,12 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
             if to_add:
                 self.relations_to_add.append(to_add)
 
-        # Go through current roles
-        # For each binding
-        # Remove all of this subject
-        # Replicate this removal
-        # Add back subject
-        # Replicate this addition
-        for role in roles:
+        # Go through current roles, and, for each binding:
+        # * Remove all of this subject
+        # * Replicate this removal
+        # * Add back subject
+        # * Replicate this addition
+        for role in self._with_system_roles_for_share(roles):
             # When a role has mixed scopes including TENANT, create bindings at each scope
             # so that workspace-scoped permissions are not lost.
             binding_scopes = self._resource_service.binding_scopes_for_role(role)
@@ -249,7 +259,10 @@ class RelationApiDualWriteGroupHandler(RelationApiDualWriteSubjectHandler):
         # so we always have to check at least the default workspace and the correct resource.
         #
         # In order to handle all these cases, we always attempt to remove the role from all scopes.
-        for scope in Scope:
+        #
+        # As a consequence of this, we also do not have to lock any system roles here: we don't actually look at
+        # the role's permissions in determining where to remove it.
+        for scope in CONCRETE_SCOPES:
             self._update_mapping_for_role(
                 role,
                 scope=scope,

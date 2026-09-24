@@ -171,7 +171,7 @@ class CrossAccountRequestViewTests(CrossAccountRequestTest):
         """Test listing cross account request based on user id of identity."""
         client = APIClient()
         response = client.get(
-            f"{URL_LIST}?query_by=user_id&org_id={self.not_anemic_org_id}", **self.associate_not_anemic_request.META
+            f"{URL_LIST}?query_by=user_id&org_id={self.not_anemic_org_id}", **self.associate_non_admin_request.META
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -182,7 +182,7 @@ class CrossAccountRequestViewTests(CrossAccountRequestTest):
 
         response = client.get(
             f"{URL_LIST}?query_by=user_id&org_id={self.not_anemic_org_id},{self.another_org_id}",
-            **self.associate_not_anemic_request.META,
+            **self.associate_non_admin_request.META,
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -361,7 +361,7 @@ class CrossAccountRequestViewTests(CrossAccountRequestTest):
         notify_mock.assert_called_once_with(
             EVENT_TYPE_RH_TAM_REQUEST_CREATED,
             {
-                "username": self.user_data["username"],
+                "username": self.user_1_data["username"],
                 "request_id": response.data["request_id"],
             },
             self.data4create["target_org"],
@@ -387,7 +387,7 @@ class CrossAccountRequestViewTests(CrossAccountRequestTest):
         notify_mock.assert_called_once_with(
             EVENT_TYPE_RH_TAM_REQUEST_CREATED,
             {
-                "username": self.user_data["username"],
+                "username": self.user_1_data["username"],
                 "request_id": response.data["request_id"],
             },
             self.data4create["target_org"],

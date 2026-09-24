@@ -54,6 +54,7 @@ from management.role.relation_api_dual_write_handler import (
 )
 from management.role.user_source import SourceKey
 from management.tenant_mapping.model import TenantMapping
+from management.tenant_mapping.v2_activation import is_v2_opted_in, set_v2_opt_in_state, ensure_v2_write_activated
 from management.tenant_service.v1 import V1TenantBootstrapService
 from management.tenant_service.v2 import V2TenantBootstrapService
 from management.workspace.model import Workspace
@@ -1178,7 +1179,243 @@ class InternalViewsetTests(BaseInternalViewsetTests):
         self.assertIsNotNone(Workspace.objects.root(tenant=tenant))
         self.assertIsNotNone(Workspace.objects.default(tenant=tenant))
         self.assertTrue(getattr(tenant, "tenant_mapping"))
+        self.assertFalse(Workspace.objects.filter(tenant=tenant, type=Workspace.Types.UNGROUPED_HOSTS).exists())
         self.assertEqual(len(tuples), 21)
+
+    def test_bootstrapping_tenant_missing_without_create_missing_returns_404(self):
+        """Default create_missing=false returns 404 for non-existent tenants."""
+        payload = {"org_ids": ["nonexistent-org"]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertFalse(Tenant.objects.filter(org_id="nonexistent-org").exists())
+
+    def test_bootstrapping_tenant_rejects_single_quoted_tenants_body(self):
+        """tenants payloads must be valid JSON; apostrophe rewrite is not applied."""
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/?create_missing=true",
+            data="{'tenants':[{'org_id':'12345'}]}",
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Tenant.objects.filter(org_id="12345").exists())
+
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_bootstrapping_tenant_create_missing(self, replicate):
+        """create_missing=true creates a Tenant row when none exists."""
+        org_id = "create-missing-org"
+
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        RbacFixture(V2TenantBootstrapService(replicator))
+        tuples.clear()
+
+        self.assertFalse(Tenant.objects.filter(org_id=org_id).exists())
+        payload = {"org_ids": [org_id]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/?create_missing=true",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        tenant = Tenant.objects.get(org_id=org_id)
+        self.assertIsNotNone(Workspace.objects.root(tenant=tenant))
+        self.assertIsNotNone(Workspace.objects.default(tenant=tenant))
+        self.assertEqual(len(tuples), 21)
+
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_bootstrapping_tenant_with_ungrouped_hosts_id(self, replicate):
+        """Bootstrap creates ungrouped-hosts workspace with supplied UUID when create_missing=true."""
+        org_id = "ungrouped-bootstrap-org"
+        ungrouped_id = str(uuid.uuid4())
+
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        RbacFixture(V2TenantBootstrapService(replicator))
+        tuples.clear()
+
+        payload = {"tenants": [{"org_id": org_id, "ungrouped_hosts_id": ungrouped_id}]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/?create_missing=true",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        tenant = Tenant.objects.get(org_id=org_id)
+        ungrouped = Workspace.objects.get(tenant=tenant, type=Workspace.Types.UNGROUPED_HOSTS)
+        self.assertEqual(str(ungrouped.id), ungrouped_id)
+        self.assertEqual(ungrouped.parent, Workspace.objects.default(tenant=tenant))
+        self.assertGreater(len(tuples), 21)
+
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_bootstrapping_tenant_ungrouped_hosts_id_conflict(self, replicate):
+        """Conflicting ungrouped_hosts_id returns 400."""
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        fixture = RbacFixture(V2TenantBootstrapService(replicator))
+        existing = fixture.new_tenant("existing-org")
+        existing_ungrouped = Workspace.objects.create(
+            tenant=existing.tenant,
+            type=Workspace.Types.UNGROUPED_HOSTS,
+            name=Workspace.SpecialNames.UNGROUPED_HOSTS,
+            parent=existing.default_workspace,
+        )
+
+        payload = {
+            "tenants": [
+                {
+                    "org_id": "another-org",
+                    "ungrouped_hosts_id": str(existing_ungrouped.id),
+                }
+            ]
+        }
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/?create_missing=true",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("already exists", response.content.decode("utf-8"))
+        self.assertFalse(Tenant.objects.filter(org_id="another-org").exists())
+
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_bootstrapping_tenant_ungrouped_hosts_id_mismatch(self, replicate):
+        """Same tenant with a different ungrouped_hosts_id returns 400."""
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        fixture = RbacFixture(V2TenantBootstrapService(replicator))
+        bootstrapped = fixture.new_tenant("mismatch-org")
+        existing_ungrouped = Workspace.objects.create(
+            tenant=bootstrapped.tenant,
+            type=Workspace.Types.UNGROUPED_HOSTS,
+            name=Workspace.SpecialNames.UNGROUPED_HOSTS,
+            parent=bootstrapped.default_workspace,
+        )
+
+        payload = {
+            "tenants": [
+                {
+                    "org_id": bootstrapped.tenant.org_id,
+                    "ungrouped_hosts_id": str(uuid.uuid4()),
+                }
+            ]
+        }
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("does not match requested id", response.content.decode("utf-8"))
+        self.assertEqual(
+            Workspace.objects.get(tenant=bootstrapped.tenant, type=Workspace.Types.UNGROUPED_HOSTS).id,
+            existing_ungrouped.id,
+        )
+
+    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
+    def test_bootstrapping_existing_tenant_with_ungrouped_hosts_id(self, replicate):
+        """ungrouped_hosts_id works on an existing tenant without create_missing."""
+        org_id = "existing-ungrouped-org"
+        ungrouped_id = str(uuid.uuid4())
+
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        replicate.side_effect = replicator.replicate
+        fixture = RbacFixture(V2TenantBootstrapService(replicator))
+        bootstrapped = fixture.new_tenant(org_id)
+        tuples.clear()
+
+        payload = {"tenants": [{"org_id": org_id, "ungrouped_hosts_id": ungrouped_id}]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        ungrouped = Workspace.objects.get(tenant=bootstrapped.tenant, type=Workspace.Types.UNGROUPED_HOSTS)
+        self.assertEqual(str(ungrouped.id), ungrouped_id)
+        self.assertEqual(ungrouped.parent, Workspace.objects.default(tenant=bootstrapped.tenant))
+        self.assertGreater(len(tuples), 0)
+
+        # Idempotent re-call with the same ungrouped_hosts_id succeeds and does not recreate.
+        tuples.clear()
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            Workspace.objects.filter(tenant=bootstrapped.tenant, type=Workspace.Types.UNGROUPED_HOSTS).count(),
+            1,
+        )
+        self.assertEqual(len(tuples), 0)
+
+    def test_bootstrapping_tenant_invalid_ungrouped_hosts_id(self):
+        """Invalid ungrouped_hosts_id UUID returns 400."""
+        payload = {"tenants": [{"org_id": "12345", "ungrouped_hosts_id": "not-a-uuid"}]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("Invalid ungrouped_hosts_id", response.content.decode("utf-8"))
+
+    def test_bootstrapping_tenant_rejects_both_body_formats(self):
+        """Supplying both org_ids and tenants returns 400."""
+        payload = {"org_ids": ["12345"], "tenants": [{"org_id": "12345"}]}
+        response = self.client.post(
+            "/_private/api/utils/bootstrap_tenant/",
+            data=payload,
+            **self.request.META,
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("not both", response.content.decode("utf-8"))
+
+    def test_bootstrapping_tenant_rejects_non_object_json_body(self):
+        """Scalar JSON bodies return 400 instead of 500."""
+        for payload in ("123", "true", "null", '["12345"]'):
+            with self.subTest(payload=payload):
+                response = self.client.post(
+                    "/_private/api/utils/bootstrap_tenant/",
+                    data=payload,
+                    **self.request.META,
+                    content_type="application/json",
+                )
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn("JSON object", response.content.decode("utf-8"))
+
+    def test_bootstrapping_tenant_rejects_invalid_utf8_body(self):
+        """Invalid UTF-8 request bodies return 400 instead of 500."""
+        response = self.client.generic(
+            "POST",
+            "/_private/api/utils/bootstrap_tenant/",
+            data=b'\xff\xfe{"org_ids":["12345"]}',
+            content_type="application/json",
+            **self.request.META,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("UTF-8", response.content.decode("utf-8"))
 
     @patch("management.relation_replicator.outbox_replicator.OutboxReplicator.replicate")
     def test_bootstrapping_multiple_tenants(self, replicate):
@@ -2749,6 +2986,194 @@ class InternalViewsetUserLookupTests(BaseInternalViewsetTests):
         self.assertEqual(len(resp_groups), 1)
         self.assertEqual(resp_groups[0]["name"], "test_group_platform_default")
 
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "test_user",
+                    "email": "test_user@redhat.com",
+                    "is_org_admin": "false",
+                    "org_id": "12345",
+                }
+            ],
+        },
+    )
+    def test_user_lookup_creates_audit_log_on_success(self, _):
+        username = "test_user"
+        tenant = Tenant.objects.create(tenant_name="test_tenant", org_id="12345")
+        principal = Principal.objects.create(username=username, tenant=tenant)
+
+        self.client.get(f"{self.API_PATH}?username={username}", **self.request.META)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertTrue(log.principal_username)
+        self.assertIn("found 'test_user'", log.description)
+        self.assertIn("username='test_user'", log.description)
+        self.assertIsNone(log.tenant)
+        self.assertEqual(log.resource_uuid, principal.uuid)
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [],
+        },
+    )
+    def test_user_lookup_creates_audit_log_on_not_found(self, _):
+        username = "nonexistent_user"
+
+        response = self.client.get(f"{self.API_PATH}?username={username}", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertTrue(log.principal_username)
+        self.assertIn("not found", log.description)
+        self.assertIn("username='nonexistent_user'", log.description)
+        self.assertIsNone(log.tenant)
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "test_user",
+                    "email": "test_user@redhat.com",
+                    "is_org_admin": "false",
+                    "org_id": "12345",
+                }
+            ],
+        },
+    )
+    def test_user_lookup_creates_audit_log_on_email_search(self, _):
+        email = "test_user@redhat.com"
+        tenant = Tenant.objects.create(tenant_name="test_tenant", org_id="12345")
+        Principal.objects.create(username="test_user", tenant=tenant)
+
+        self.client.get(f"{self.API_PATH}?email={email}", **self.request.META)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertIn("email='test_user@redhat.com'", log.description)
+        self.assertIsNone(log.tenant)
+
+    def test_user_lookup_no_audit_log_on_bad_input(self):
+        response = self.client.get(f"{self.API_PATH}", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 0)
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "test_user",
+                    "email": "test_user@redhat.com",
+                    "is_org_admin": "false",
+                    "org_id": "12345",
+                }
+            ],
+        },
+    )
+    @patch("internal.views.AuditLog.objects.create", side_effect=Exception("db error"))
+    def test_user_lookup_succeeds_when_audit_log_fails(self, mock_create, _):
+        username = "test_user"
+        tenant = Tenant.objects.create(tenant_name="test_tenant", org_id="12345")
+        Principal.objects.create(username=username, tenant=tenant)
+
+        response = self.client.get(f"{self.API_PATH}?username={username}", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_create.assert_called()
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [],
+        },
+    )
+    def test_user_lookup_creates_audit_log_on_bop_error(self, mock_proxy):
+        mock_proxy.side_effect = Exception("BOP connection failed")
+        username = "test_user"
+
+        response = self.client.get(f"{self.API_PATH}?username={username}", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertIn("error querying bop", log.description)
+        self.assertIn("username='test_user'", log.description)
+        self.assertIsNone(log.tenant)
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "test_user",
+                    "email": "test_user@redhat.com",
+                    "is_org_admin": "false",
+                    "org_id": "12345",
+                }
+            ],
+        },
+    )
+    def test_user_lookup_creates_audit_log_on_tenant_error(self, _):
+        response = self.client.get(f"{self.API_PATH}?username=test_user", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertIn("error resolving tenant", log.description)
+
+    @patch(
+        "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+        return_value={
+            "status_code": 200,
+            "data": [
+                {
+                    "username": "test_user",
+                    "email": "test_user@redhat.com",
+                    "is_org_admin": "false",
+                    "org_id": "12345",
+                }
+            ],
+        },
+    )
+    @patch(
+        "internal.views.get_principal",
+        side_effect=Exception("something went wrong"),
+    )
+    def test_user_lookup_creates_audit_log_on_principal_error(self, __, _):
+        Tenant.objects.create(tenant_name="test_tenant", org_id="12345")
+
+        response = self.client.get(f"{self.API_PATH}?username=test_user", **self.request.META)
+
+        self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        audit_logs = AuditLog.objects.filter(resource_type=AuditLog.USER, action=AuditLog.READ)
+        self.assertEqual(audit_logs.count(), 1)
+        log = audit_logs.first()
+        self.assertIn("error resolving principal", log.description)
+
 
 @override_settings(ATOMIC_RETRY_DISABLED=True)
 class FixMissingBindingBaseTuplesTests(BaseInternalViewsetTests):
@@ -4104,9 +4529,7 @@ class InternalRelationsViewsetTests(BaseInternalViewsetTests):
                     )
                 ),
             ),
-            pagination=common_pb2.ResponsePagination(
-                continuation_token="asfhdsfuygsdufkysagdfiwesudfyd192837102937sdiufgsjkahdfd=="
-            ),
+            pagination=common_pb2.ResponsePagination(continuation_token="test-continuation-token"),
         )
 
         mock_stub.ReadTuples.return_value = [mock_response_1]
@@ -4821,7 +5244,7 @@ class InternalInventoryViewsetTests(BaseInternalViewsetTests):
         mock_stub = MagicMock()
         mock_stub.Check.return_value = "true"
 
-        mock_check_workspace_relation.return_value = mock_stub.Check.return_value
+        mock_check_workspace_relation.return_value = (True, [])
         mock_workspace_view.return_value = (
             {
                 "org_id": self.root_workspace.tenant.org_id,
@@ -4848,7 +5271,7 @@ class InternalInventoryViewsetTests(BaseInternalViewsetTests):
         # Check response
         self.assertEqual(response_body["org_id"], self.root_workspace.tenant.org_id)
         self.assertEqual(response_body["workspace_id"], str(self.root_workspace.id))
-        self.assertEqual(response_body["workspace_descendants_correct"], "true")
+        self.assertTrue(response_body["workspace_descendants_correct"])
 
     @patch(
         "management.inventory_checker.inventory_api_check.WorkspaceRelationInventoryChecker.check_workspace",
@@ -5461,3 +5884,112 @@ class KesselParityCheckEndpointTests(BaseInternalViewsetTests):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("non-empty strings", response.content.decode())
+
+
+@override_settings(ATOMIC_RETRY_DISABLED=True)
+class InternalOptInViewsetTests(BaseInternalViewsetTests):
+    def setUp(self):
+        super().setUp()
+        bootstrap_tenant_for_v2_test(self.tenant)
+
+        self.url = self._url_for(self.tenant.org_id)
+
+    def _url_for(self, org_id: str):
+        return f"/_private/api/utils/tenant_v2_opt_in/{org_id}/"
+
+    def _get(self):
+        return self.client.get(self.url, **self.request.META)
+
+    def _patch(self, body):
+        return self.client.patch(self.url, body, content_type="application/json", **self.request.META)
+
+    def _assert_response(self, response, body, status: int = 200):
+        self.assertEqual(json.loads(response.content), body)
+        self.assertEqual(response.status_code, status)
+
+    def test_get(self):
+        self.assertFalse(is_v2_opted_in(self.tenant))
+
+        response = self._get()
+        self._assert_response(response, {"v2_opted_in": False})
+
+        set_v2_opt_in_state(self.tenant, True)
+
+        response = self._get()
+        self._assert_response(response, {"v2_opted_in": True})
+
+    def test_opt_in(self):
+        response = self._patch({"v2_opted_in": True})
+
+        self._assert_response(response, {"v2_opted_in": True})
+        self.assertTrue(is_v2_opted_in(self.tenant))
+
+    def test_invalid_opt_in(self):
+        TenantMapping.objects.filter(tenant=self.tenant).delete()
+
+        response = self._patch({"v2_opted_in": True})
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        self.assertFalse(is_v2_opted_in(self.tenant))
+
+    def test_opt_out(self):
+        set_v2_opt_in_state(self.tenant, True)
+        response = self._patch({"v2_opted_in": False})
+
+        self._assert_response(response, {"v2_opted_in": False})
+        self.assertFalse(is_v2_opted_in(self.tenant))
+
+    def test_invalid_opt_out(self):
+        ensure_v2_write_activated(self.tenant)
+        response = self._patch({"v2_opted_in": False})
+
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        self.assertTrue(is_v2_opted_in(self.tenant))
+
+    def test_empty_patch(self):
+        response = self._patch({})
+
+        self._assert_response(response, {"v2_opted_in": False})
+        self.assertFalse(is_v2_opted_in(self.tenant))
+        self.assertFalse(is_v2_opted_in(self.tenant))
+
+    def test_invalid_patch(self):
+        response = self._patch({"something": "else"})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(is_v2_opted_in(self.tenant))
+
+    def test_not_found(self):
+        response = self.client.get(self._url_for("invalid_org"), **self.request.META)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+@override_settings(KAFKA_ENABLED=True, RBAC_KAFKA_CONSUMER_TOPIC="test-topic")
+class SendKafkaTestMessageTests(IdentityRequest):
+    """Tests for the send_kafka_test_message internal endpoint."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        self.internal_request_context = self._create_request_context(
+            self.customer_data, self.user_data, is_internal=True
+        )
+        self.request = self.internal_request_context["request"]
+        user = User()
+        user.username = self.user_data["username"]
+        user.account = self.customer_data["account_id"]
+        self.request.user = user
+
+    @patch("core.kafka.RBACProducer")
+    def test_send_kafka_test_message_returns_500_on_failure(self, mock_producer_class):
+        mock_producer_class.return_value.send_kafka_message.return_value = False
+        response = self.client.get("/_private/api/utils/kafka_test_message/", **self.request.META)
+        self.assertEqual(response.status_code, 500)
+        data = json.loads(response.content)
+        self.assertEqual(data["error"], "Failed to send Kafka message")
+
+    @patch("core.kafka.RBACProducer")
+    def test_send_kafka_test_message_returns_200_on_success(self, mock_producer_class):
+        mock_producer_class.return_value.send_kafka_message.return_value = True
+        response = self.client.get("/_private/api/utils/kafka_test_message/", **self.request.META)
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(data["message"], "Test message sent successfully")

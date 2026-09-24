@@ -17,14 +17,13 @@ from management.relation_replicator.relation_replicator import (
     WorkspaceEventStream,
 )
 from management.relation_replicator.types import RelationTuple
+from management.tenant_mapping.exceptions import TenantNotBootstrappedError
 from management.tenant_mapping.model import DefaultAccessType, TenantMapping, logger
 from management.tenant_service.relations import default_role_binding_tuples
-from management.tenant_service.tenant_service import BootstrappedTenant
-from management.tenant_service.tenant_service import _ensure_principal_with_user_id_in_tenant
+from management.tenant_service.tenant_service import BootstrappedTenant, _ensure_principal_with_user_id_in_tenant
 from management.workspace.model import Workspace
 from management.workspace.utils.event import make_workspace_event
 from migration_tool.utils import create_relationship
-
 
 from api.models import Tenant, User
 
@@ -117,12 +116,6 @@ def try_lock_tenants_for_bootstrap(tenants: Iterable[Tenant]) -> dict[Tenant, Op
         )
 
     return result
-
-
-class TenantNotBootstrappedError(Exception):
-    """Raised when a tenant is required to have been bootstrapped but has not been."""
-
-    pass
 
 
 def try_lock_tenant_for_bootstrap(tenant: Tenant) -> Optional[TenantBootstrapLock]:
@@ -316,7 +309,9 @@ class V2TenantBootstrapService:
 
         # Add user to default group if not a service account
         if not user.is_service_account:
-            _ensure_principal_with_user_id_in_tenant(user, bootstrapped_tenant.tenant, upsert=upsert)
+            _ensure_principal_with_user_id_in_tenant(
+                user, bootstrapped_tenant.tenant, upsert=upsert, replicator=self._replicator
+            )
             tuples_to_add, tuples_to_remove = self._default_group_tuple_edits(user, mapping)
 
         self._replicator.replicate(
@@ -708,6 +703,13 @@ class V2TenantBootstrapService:
             relationships.extend(built_in_relationships)
 
         Workspace.objects.bulk_create([*default_workspaces, *root_workspaces])
+
+        # Invalidate workspace cache for each bootstrapped tenant
+        from management.cache import WORKSPACE_CACHE
+
+        for tenant in tenants:
+            if tenant.org_id:
+                WORKSPACE_CACHE.delete_workspaces_for_tenant(tenant.org_id)
 
         mappings = TenantMapping.objects.bulk_create(mappings_to_create)
         tenant_mappings = {mapping.tenant_id: mapping for mapping in mappings}

@@ -16,14 +16,16 @@
 #
 """Test tuple changes for RBAC operations."""
 
+import logging
+from contextlib import contextmanager
 from datetime import timedelta
+from typing import Callable, Iterable, Optional, Tuple
+from unittest.mock import patch
 
-from django.utils import timezone
-from typing import Callable, Optional, Tuple, Iterable
-from django.test import TestCase, override_settings
-from django.db.models import Q
 from django.conf import settings
-
+from django.db.models import Q
+from django.test import TestCase, override_settings
+from django.utils import timezone
 from management.group.definer import seed_group, set_system_flag_before_update
 from management.group.model import Group
 from management.group.platform import GlobalPolicyIdService
@@ -56,11 +58,10 @@ from management.role.relation_api_dual_write_handler import (
 from management.role.v2_model import CustomRoleV2, RoleV2, SeededRoleV2
 from management.role_binding.model import RoleBinding, RoleBindingPrincipal
 from management.role_binding.service import RoleBindingService
-from management.tenant_mapping.model import TenantMapping, DefaultAccessType
+from management.tenant_mapping.model import DefaultAccessType, TenantMapping
 from management.tenant_mapping.v2_activation import ensure_v2_write_activated
-from management.tenant_service.tenant_service import BootstrappedTenant
+from management.tenant_service.tenant_service import BootstrappedTenant, TenantBootstrapService
 from management.tenant_service.v2 import V2TenantBootstrapService
-from management.tenant_service.tenant_service import TenantBootstrapService
 from migration_tool.in_memory_tuples import (
     InMemoryRelationReplicator,
     InMemoryTuples,
@@ -73,7 +74,10 @@ from migration_tool.in_memory_tuples import (
     subject,
     subject_type,
 )
+from migration_tool.models import V2boundresource
 from migration_tool.utils import create_relationship
+from tests.util import assert_v1_v2_locally_consistent, assert_v1_v2_tuples_fully_consistent
+from tests.v2_util import bootstrap_tenant_for_v2_test, seed_v2_role_from_v1
 
 from api.cross_access.model import CrossAccountRequest
 from api.cross_access.relation_api_dual_write_cross_access_handler import (
@@ -81,11 +85,21 @@ from api.cross_access.relation_api_dual_write_cross_access_handler import (
 )
 from api.cross_access.util import create_cross_principal
 from api.models import Tenant, User
-from unittest.mock import patch
 
-from migration_tool.models import V2boundresource
-from tests.util import assert_v1_v2_locally_consistent, assert_v1_v2_tuples_fully_consistent
-from tests.v2_util import seed_v2_role_from_v1, bootstrap_tenant_for_v2_test
+
+@contextmanager
+def enable_logging():
+    """Re-enable logging temporarily for assertLogs in parallel test runner.
+
+    Django's parallel test runner disables low-level logs via logging.disable().
+    This context manager restores logging within its scope and resets afterward.
+    """
+    prior_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    try:
+        yield
+    finally:
+        logging.disable(prior_disable)
 
 
 @override_settings(REPLICATION_TO_RELATION_ENABLED=True)
@@ -1238,6 +1252,31 @@ class DualWriteGroupTestCase(DualWriteTestCase):
         with self.assertRaises(RuntimeError):
             self.given_roles_unassigned_from_group(group, [role])
 
+    def test_empty_group_replicate_skipped(self):
+        """Group replication with no relations to add or remove is skipped at handler level."""
+        group, _ = self.given_group("empty group", [])
+
+        replicator = InMemoryRelationReplicator(self.tuples)
+        handler = RelationApiDualWriteGroupHandler(
+            group,
+            ReplicationEventType.ASSIGN_ROLE,
+            replicator=replicator,
+        )
+
+        # Don't generate any relations — simulate a no-op role assignment
+        with enable_logging():
+            with (
+                self.assertLogs("management.group.relation_api_dual_write_group_handler", level="INFO") as logs,
+                patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
+            ):
+                handler.replicate()
+
+            self.assertTrue(
+                any("Skipping empty replication event for group" in log for log in logs.output),
+                f"Expected handler-level skip log, got: {logs.output}",
+            )
+            spy.assert_not_called()
+
 
 class DualWriteSystemRolesTestCase(DualWriteTestCase):
     """Test dual write logic for system roles."""
@@ -2156,6 +2195,26 @@ class DualWriteSystemRolesTestCase(DualWriteTestCase):
             )
             self.assertEqual(len(deleted_tuple), 0)
 
+    def test_empty_system_role_replication_skipped(self):
+        """System role with no permissions skips replication at handler level."""
+        role = self.fixture.new_system_role(name="empty system role", permissions=[])
+
+        replicator = InMemoryRelationReplicator(self.tuples)
+        handler = SeedingRelationApiDualWriteHandler(role=role, replicator=replicator)
+
+        with enable_logging():
+            with (
+                self.assertLogs("management.role.relation_api_dual_write_handler", level="WARNING") as logs,
+                patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
+            ):
+                handler.replicate_new_system_role()
+
+            self.assertTrue(
+                any("Skipping empty replication event for system role" in log for log in logs.output),
+                f"Expected handler-level skip log, got: {logs.output}",
+            )
+            spy.assert_not_called()
+
 
 class DualWriteCustomRolesTestCase(DualWriteTestCase):
     """Test dual write logic when we are working with custom roles."""
@@ -2670,6 +2729,90 @@ class DualWriteCustomRolesTestCase(DualWriteTestCase):
         self.assertFalse(BindingMapping.objects.filter(role=role).exists())
         self.assertFalse(RoleBinding.objects.filter(role__v1_source=role).exists())
 
+    def test_empty_replication_event_skipped_for_custom_role(self):
+        """Empty replication events are caught at handler level, not at outbox."""
+        replicator = InMemoryRelationReplicator(self.tuples)
+
+        # Create a custom role with no access permissions — results in empty relations
+        role = Role.objects.create(name="empty role", system=False, tenant=self.tenant)
+
+        dual_write = self.dual_write_handler(role, ReplicationEventType.CREATE_CUSTOM_ROLE, replicator=replicator)
+
+        with enable_logging():
+            with (
+                self.assertLogs("management.role.relation_api_dual_write_handler", level="INFO") as logs,
+                patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
+            ):
+                dual_write.replicate_new_or_updated_role(role)
+
+            # Should log info about skipping, not reach the outbox with a warning
+            self.assertTrue(
+                any("Skipping empty replication event for role" in log for log in logs.output),
+                f"Expected handler-level skip log, got: {logs.output}",
+            )
+            spy.assert_not_called()
+
+    def test_empty_delete_replication_event_skipped_for_custom_role(self):
+        """Delete of role with no bindings produces no empty event."""
+        replicator = InMemoryRelationReplicator(self.tuples)
+
+        # Create role with no access — no binding mappings will exist
+        role = Role.objects.create(name="empty role for delete", system=False, tenant=self.tenant)
+
+        dual_write = self.dual_write_handler(role, ReplicationEventType.DELETE_CUSTOM_ROLE, replicator=replicator)
+        dual_write.prepare_for_update()
+        role.delete()
+
+        with enable_logging():
+            with (
+                self.assertLogs("management.role.relation_api_dual_write_handler", level="INFO") as logs,
+                patch.object(replicator, "replicate", wraps=replicator.replicate) as spy,
+            ):
+                dual_write.replicate_deleted_role()
+
+            self.assertTrue(
+                any("Skipping empty replication event for role" in log for log in logs.output),
+                f"Expected handler-level skip log, got: {logs.output}",
+            )
+            spy.assert_not_called()
+
+    @override_settings(V2_MIGRATION_APP_EXCLUDE_LIST=["cost-management"])
+    def test_excluded_app_role_skipped_without_warning(self):
+        """Roles with only excluded-app permissions are skipped gracefully, not warned about."""
+        # Create a custom role with only cost-management permissions (no dual-write migration).
+        # cost-management:reports:read is seeded by default, so we can reference it directly.
+        role = self.fixture.new_custom_role(
+            name="cost mgmt test role",
+            tenant=self.tenant,
+            resource_access=self.fixture.workspace_access(["cost-management:reports:read"]),
+        )
+
+        # Verify no binding mappings exist (role was never migrated — excluded app)
+        self.assertFalse(BindingMapping.objects.filter(role=role).exists())
+        self.assertTrue(role.access.exists(), "Role should have access permissions")
+
+        group, _ = self.given_group("test group", ["u1"])
+
+        with enable_logging():
+            with self.assertLogs("management.group.relation_api_dual_write_subject_handler", level="INFO") as logs:
+                self.given_roles_assigned_to_group(group, roles=[role])
+
+            # Should log info-level skip, NOT the warning about inconsistent relations
+            self.assertTrue(
+                any("migration-excluded apps" in log for log in logs.output),
+                f"Expected excluded-app skip log, got: {logs.output}",
+            )
+            self.assertFalse(
+                any("relations are inconsistent" in log for log in logs.output),
+                "Should NOT warn about inconsistency for excluded-app roles",
+            )
+
+        # Binding mappings should still NOT exist (role was not migrated)
+        self.assertFalse(
+            BindingMapping.objects.filter(role=role).exists(),
+            "Excluded-app roles should not be auto-migrated",
+        )
+
 
 @override_settings(ROOT_SCOPE_PERMISSIONS="advisor:*:*", TENANT_SCOPE_PERMISSIONS="subscriptions:*:*")
 class DualWriteMixedScopeTestCase(DualWriteTestCase):
@@ -2909,17 +3052,38 @@ class DualWriteCrossAccountReqeustTestCase(DualWriteTestCase):
         ensure_v2_write_activated(self.tenant)
         self._do_test_scope_assignment()
 
+    @override_settings(ROOT_SCOPE_PERMISSIONS="inventory:*:*", TENANT_SCOPE_PERMISSIONS="rbac:*:*")
+    def _do_test_binding_multiple_scopes(self):
+        system_role = self.given_v1_system_role("test", permissions=["rbac:resource:verb", "inventory:resource:verb"])
+        car = self.given_car(self.user_id, [system_role])
+
+        self._expect_user_root_count(1, system_role)
+        self._expect_user_tenant_count(1, system_role)
+
+    def test_binding_multiple_scopes(self):
+        self._do_test_binding_multiple_scopes()
+
+    def test_v2_binding_multiple_scopes(self):
+        ensure_v2_write_activated(self.tenant)
+        self._do_test_binding_multiple_scopes()
+
     def _do_test_scope_removal(self):
         system_role = self.given_v1_system_role("test", permissions=["app:resource:verb"])
 
         with self.settings(ROOT_SCOPE_PERMISSIONS="", TENANT_SCOPE_PERMISSIONS="app:resource:verb"):
             car = self.given_car(self.user_id, [system_role])
+
             self._expect_user_tenant_count(1, system_role)
+            self._expect_user_root_count(0, system_role)
+            self._expect_user_default_count(0, system_role)
 
         # Expiring the CAR should remove the role binding even if the role's scope has changed in the interim.
         with self.settings(ROOT_SCOPE_PERMISSIONS="", TENANT_SCOPE_PERMISSIONS=""):
             self.given_car_expired(car)
+
+            self._expect_user_tenant_count(0, system_role)
             self._expect_user_root_count(0, system_role)
+            self._expect_user_default_count(0, system_role)
 
     def test_scope_removal(self):
         self._do_test_scope_removal()
