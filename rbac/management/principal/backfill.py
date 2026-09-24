@@ -59,9 +59,12 @@ def backfill_atomic(retries: Optional[int] = None):
             return transaction.atomic(retry=retries)
 
     def decorator(fn):
-        """Wrap ``fn`` so the transaction wrapper is evaluated on each call."""
+        """Wrap ``fn`` so the transaction wrapper is evaluated on each call.
 
-        # We have to delay evaluation of the decorator because settings can change during tests.
+        Settings are evaluated at call time (not import time) because they can
+        change during tests.
+        """
+
         @wraps(fn)
         def wrapped(*args, **kwargs):
             """Execute ``fn`` inside the dynamically-selected transaction wrapper."""
