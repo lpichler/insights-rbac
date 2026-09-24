@@ -236,7 +236,10 @@ class IdentityHeaderMiddleware:
             TENANTS.save_tenant(tenant)
 
         # Backfill requesting user's TenantMapping membership.
-        run_atomic_with_retry(5, lambda: backfill_remote_principal(self.bootstrap_service, request.user, tenant))
+        # Skip for cross-access: username was rewritten to "{org_id}-{user_id}" and
+        # must not create/upsert a principal with the requester's real user_id (RHCLOUD-51516).
+        if not request.user.cross_access:
+            run_atomic_with_retry(5, lambda: backfill_remote_principal(self.bootstrap_service, request.user, tenant))
 
         return tenant
 
@@ -432,6 +435,11 @@ class IdentityHeaderMiddleware:
                             },
                         )
                         return HttpResponseUnauthorizedRequest()
+                    # Rewrite to the cross-account principal username so access
+                    # checks resolve the CAR principal. Mark the request so
+                    # principal backfill does not treat this as a new user
+                    # (RHCLOUD-51516).
+                    user.cross_access = True
                     user.username = f"{user.org_id}-{user.user_id}"
         except (KeyError, TypeError, JSONDecodeError):
             if _is_a2s_path(request):

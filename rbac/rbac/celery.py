@@ -56,18 +56,45 @@ app.conf.beat_schedule = {
     },
 }
 
-# Schedule principal cleanup via Kafka only when it is enabled AND a topic is configured;
-# otherwise fall back to the 7-day sweep. Without the topic check, the 60s task would fire
-# with no topic to consume, log an error every minute (see cleaner.py), and leave the 7-day
-# backstop unscheduled.
-if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED and settings.KAFKA_PRINCIPAL_CLEANUP_TOPIC:
-    app.conf.beat_schedule["principal-cleanup-every-minute"] = {
-        "task": "management.tasks.principal_cleanup_via_kafka",
+# Determine which principal cleanup method to use.
+# When both UMB and Kafka are enabled, schedule them as *separate* beat entries so each
+# gets a full minute (shadow mode used to run them sequentially in one dispatcher task,
+# which let a busy UMB starve Kafka). Mode is still decided at runtime via Unleash.
+if settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB and settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA:
+    app.conf.beat_schedule["principal-cleanup-umb-every-minute"] = {
+        "task": "management.tasks.principal_cleanup_umb_tick",
         "schedule": 60,  # Every 60 seconds
         "args": [],
     }
+    app.conf.beat_schedule["principal-cleanup-kafka-every-minute"] = {
+        "task": "management.tasks.principal_cleanup_kafka_tick",
+        "schedule": 60,  # Every 60 seconds
+        "args": [],
+    }
+elif settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_UMB:
+    if settings.UMB_JOB_ENABLED:  # TODO: This is temp flag, remove it after populating user_id
+        app.conf.beat_schedule["principal-cleanup-every-minute"] = {
+            "task": "management.tasks.principal_cleanup_via_umb",
+            "schedule": 60,  # Every 60 second
+            "args": [],
+        }
+elif settings.PRINCIPAL_CLEANUP_DELETION_ENABLED_KAFKA:
+    if settings.KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED:
+        app.conf.beat_schedule["principal-cleanup-every-minute"] = {
+            "task": "management.tasks.principal_cleanup_via_kafka",
+            "schedule": 60,  # Every 60 seconds
+            "args": [],
+        }
+    else:
+        # Kafka cleanup is enabled but KAFKA_PRINCIPAL_CLEANUP_JOB_ENABLED is False
+        # Fall back to 7-day cleanup to prevent silent failure
+        app.conf.beat_schedule["principal-cleanup-every-sevenish-days"] = {
+            "task": "management.tasks.principal_cleanup",
+            "schedule": crontab(0, 0, day_of_month="7-28/7"),
+            "args": [],
+        }
 else:
-    # Kafka cleanup is not enabled - fall back to 7-day cleanup as backstop
+    # No cleanup enabled at all - fall back to 7-day cleanup
     app.conf.beat_schedule["principal-cleanup-every-sevenish-days"] = {
         "task": "management.tasks.principal_cleanup",
         "schedule": crontab(0, 0, day_of_month="7-28/7"),
