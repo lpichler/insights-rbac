@@ -55,8 +55,6 @@ class FeatureFlags:
     TOGGLE_WORKSPACE_ACCESS_CHECK_V2 = "rbac.workspace-access-check-v2.enabled"
     # When enabled, use 'role_binding_view' permission; when disabled, use 'view' permission for role binding access.
     TOGGLE_USE_ROLE_BINDING_VIEW_PERMISSION = "rbac.use-role-binding-view-permission.enabled"
-    # Per-org flag: when enabled, the org uses v2 APIs for write operations and v1 write APIs are blocked.
-    TOGGLE_V2_EDIT_API_ENABLED = "platform.rbac.workspaces"
     # Global rollout of V2 data for OCM integrations.
     TOGGLE_OCM_V2_ENABLED = "rbac.ocm-v2.enabled"
     # Per-org flag: when enabled, the org uses only V2 access checks for HBI (and V1 access checks are blocked).
@@ -205,20 +203,6 @@ class FeatureFlags:
             fallback_function=lambda ignored_toggle_name, ignored_context: settings.USE_ROLE_BINDING_VIEW_PERMISSION,
         )
 
-    def is_v2_edit_api_enabled(self, org_id: str) -> bool:
-        """Check whether v2 write APIs are enabled for the given org.
-
-        When enabled, the org should use v2 APIs and v1 write operations are blocked.
-        When disabled, the org should use v1 APIs and v2 write operations are blocked.
-
-        Uses orgId in context to match Unleash strategy constraints (contextName: orgId).
-        """
-        return self.is_enabled(
-            feature_name=self.TOGGLE_V2_EDIT_API_ENABLED,
-            context={"orgId": str(org_id)},
-            fallback_function=lambda ignored_toggle_name, ignored_context: settings.V2_EDIT_API_ENABLED,
-        )
-
     def is_ocm_v2_enabled_global(self) -> bool:
         """Check the global OCM V2 rollout flag without organization targeting."""
         return self.is_enabled(
@@ -231,15 +215,11 @@ class FeatureFlags:
 
         When enabled, apps that have opted-in to strict V2 access checks must only use V2 access checks for the org,
         and V1 access checks are blocked (even if the org has not yet migrated to V2).
-
-        It is expected that this is set for a superset of the orgs that TOGGLE_V2_EDIT_API_ENABLED is set for.
         """
-        # Note that we use the same fallback_function as is_v2_edit_api_enabled above in order to maintain the
-        # invariant that this flag is set for a superset of the other flag.
         return self.is_enabled(
             feature_name=self.TOGGLE_V2_ADDITIONAL_MANDATORY_ACCESS_CHECK_REQUIRED,
             context={"orgId": str(org_id)},
-            fallback_function=lambda ignored_toggle_name, ignored_context: settings.V2_EDIT_API_ENABLED,
+            fallback_function=lambda ignored_toggle_name, ignored_context: False,
         )
 
 

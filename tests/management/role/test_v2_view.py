@@ -40,6 +40,7 @@ from management.role.definer import seed_roles
 from management.role.v2_model import CustomRoleV2, PlatformRoleV2, RoleV2, SeededRoleV2
 from management.role.v2_role_scope import v2_role_excluded_application_permission_ids_cache
 from management.role.v2_service import RoleV2Service
+from management.tenant_mapping.v2_activation import is_v2_opted_in, set_v2_opt_in_state
 from management.tenant_service import V2TenantBootstrapService
 from management.utils import PRINCIPAL_CACHE, as_uuid
 from rbac import urls
@@ -59,7 +60,7 @@ def _scope_cache(tenant_perms="", root_perms="", default_perms=""):
     return PermissionScopeCache(scope_service)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2RetrieveViewTest(IdentityRequest):
     """Test the RoleV2ViewSet retrieve endpoint."""
 
@@ -68,9 +69,10 @@ class RoleV2RetrieveViewTest(IdentityRequest):
         reload(urls)
         clear_url_caches()
         super().setUp()
-        # Bootstrap tenant so V2 writes (create/update/destroy) can run ensure_v2_write_activated
-        bootstrap_tenant_for_v2_test(self.tenant)
         self.client = APIClient()
+
+        bootstrap_tenant_for_v2_test(self.tenant)
+        set_v2_opt_in_state(self.tenant, True)
 
         self.enterContext(
             patch(
@@ -451,7 +453,7 @@ class RoleV2RetrieveViewTest(IdentityRequest):
         self.assertEqual(set(create_permissions), set(retrieve_permissions))
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2ViewSetTests(IdentityRequest):
     """Test the RoleV2ViewSet."""
 
@@ -463,10 +465,11 @@ class RoleV2ViewSetTests(IdentityRequest):
         clear_url_caches()
 
         super().setUp()
-        # Bootstrap tenant so V2 writes (create/update/destroy) can run ensure_v2_write_activated
-        bootstrap_tenant_for_v2_test(self.tenant)
         self.client = APIClient()
         self.client.credentials(HTTP_X_RH_IDENTITY=self.headers.get("HTTP_X_RH_IDENTITY"))
+
+        bootstrap_tenant_for_v2_test(self.tenant)
+        set_v2_opt_in_state(self.tenant, True)
 
         self.enterContext(
             patch(
@@ -1218,9 +1221,10 @@ class RoleV2ViewSetTests(IdentityRequest):
     # Tests for POST /api/v2/roles/ (create)
     # ==========================================================================
 
-    @patch("management.permissions.v2_edit_api_access.FEATURE_FLAGS.is_v2_edit_api_enabled", return_value=False)
-    def test_create_role_blocked_when_feature_flag_disabled(self, mock_is_v2_edit_enabled):
+    def test_create_role_blocked_when_not_opted_in(self):
         """Test that V2 role create returns 403 when workspaces feature flag is disabled for the org."""
+        set_v2_opt_in_state(self.tenant, False)
+
         data = {
             "name": "Blocked Role",
             "description": "Should be blocked",
@@ -1229,7 +1233,6 @@ class RoleV2ViewSetTests(IdentityRequest):
         response = self.client.post(self.url, data, format="json")
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIn("workspaces", str(response.data).lower())
-        mock_is_v2_edit_enabled.assert_called_once_with(self.customer_data["org_id"])
 
     @override_settings(NOTIFICATIONS_ENABLED=True)
     @patch("core.kafka.RBACProducer.send_kafka_message")
@@ -2238,7 +2241,7 @@ _SENTINEL = RuntimeError("_atomic_action sentinel")
 _ATOMIC_ACTION_PATH = "management.v2_mixins.AtomicOperationsMixin._atomic_action"
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2ViewSetAtomicWiringTests(IdentityRequest):
     """Verify RoleV2ViewSet write endpoints delegate to _atomic_action."""
 
@@ -2247,9 +2250,11 @@ class RoleV2ViewSetAtomicWiringTests(IdentityRequest):
         reload(urls)
         clear_url_caches()
         super().setUp()
-        bootstrap_tenant_for_v2_test(self.tenant)
         self.client = APIClient()
         self.client.credentials(HTTP_X_RH_IDENTITY=self.headers.get("HTTP_X_RH_IDENTITY"))
+
+        bootstrap_tenant_for_v2_test(self.tenant)
+        set_v2_opt_in_state(self.tenant, True)
 
         self.enterContext(
             patch(

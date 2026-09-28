@@ -228,14 +228,12 @@ class OCMV2FeatureFlagsTest(IdentityRequest):
             for enabled in (True, False):
                 with (
                     self.subTest(enabled=enabled),
-                    override_settings(
-                        OCM_V2_ENABLED=enabled, V2_EDIT_API_ENABLED=not enabled, V2_APIS_ENABLED=not enabled
-                    ),
+                    override_settings(OCM_V2_ENABLED=enabled, V2_APIS_ENABLED=not enabled),
                 ):
                     self.assertIs(flags.is_ocm_v2_enabled_global(), enabled)
             self.assertEqual(initialize.call_count, 2)
 
-    @override_settings(OCM_V2_ENABLED=False, V2_EDIT_API_ENABLED=True)
+    @override_settings(OCM_V2_ENABLED=False)
     def test_missing_flag_defaults_off(self):
         """A missing Unleash flag leaves OCM on V1 even when workspace writes are enabled."""
         flags = FeatureFlags()

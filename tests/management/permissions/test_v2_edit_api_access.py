@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 from management.permissions.v2_edit_api_access import is_v2_access_check_required_for_request
-from management.tenant_mapping.v2_activation import ensure_v2_write_activated
+from management.tenant_mapping.v2_activation import ensure_v2_write_activated, set_v2_opt_in_state
 from tests.v2_util import bootstrap_tenant_for_v2_test
 
 from api.models import Tenant
@@ -16,7 +16,7 @@ class AccessCheckRequiredTest(TestCase):
         self.tenant = Tenant.objects.create(tenant_name="a tenant", org_id="a-tenant")
         bootstrap_tenant_for_v2_test(self.tenant)
 
-        self._set_edit_flag(False)
+        set_v2_opt_in_state(self.tenant, False)
         self._set_strict_check_flag(False)
 
     def _check_for(self, applications: list[str]) -> bool:
@@ -25,11 +25,6 @@ class AccessCheckRequiredTest(TestCase):
         request_mock.user.org_id = self.tenant.org_id
 
         return is_v2_access_check_required_for_request(request_mock, applications)
-
-    def _set_edit_flag(self, value: bool):
-        self.enterContext(
-            patch("management.permissions.v2_edit_api_access.FEATURE_FLAGS.is_v2_edit_api_enabled", return_value=value)
-        )
 
     def _set_strict_check_flag(self, value: bool):
         self.enterContext(
@@ -50,7 +45,7 @@ class AccessCheckRequiredTest(TestCase):
         self.assertTrue(self._check_for(["other_app"]))
 
     def test_required_if_edit_enabled(self):
-        self._set_edit_flag(True)
+        set_v2_opt_in_state(self.tenant, True)
         self._set_strict_check_flag(True)
 
         self.assertTrue(self._check_for(["other_app"]))

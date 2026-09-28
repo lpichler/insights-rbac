@@ -54,7 +54,6 @@ bonfire deploy host-inventory kessel rbac --source appsre --ref-env insights-sta
     -p rbac/RBAC_KAFKA_CONSUMER_TOPIC=outbox.event.relations-replication-event \
     -p rbac/MIN_WORKER_REPLICAS=1 \
     -p rbac/CELERY_WORKER_CONCURRENCY=1 \
-    -p rbac/V2_EDIT_API_ENABLED=True \
     -p rbac/V2_MIGRATION_APP_EXCLUDE_LIST="approval" \
     -p rbac/ROLE_CREATE_ALLOW_LIST="remediations,inventory,policies,advisor,vulnerability,compliance,automation-analytics,notifications,patch,integrations,ros,staleness,config-manager,idmsvc" \
     -p kessel-relations/SPICEDB_QUANTIZATION_INTERVAL=2.5s \

@@ -38,6 +38,7 @@ from management.audit_log.model import AuditLog
 from management.group.definer import seed_group
 from management.group.platform import GlobalPolicyIdService
 from management.models import Group, Permission, Principal, Workspace
+from management.tenant_mapping.v2_activation import set_v2_opt_in_state
 from management.utils import PROBLEM_TYPES
 from management.permission.scope_service import CONCRETE_SCOPES, Scope
 from management.role.definer import seed_roles
@@ -52,6 +53,7 @@ from management.tenant_service.v2 import V2TenantBootstrapService
 from migration_tool.in_memory_tuples import InMemoryRelationReplicator
 from rbac import urls
 from tests.identity_request import IdentityRequest, TransactionalIdentityRequest
+from tests.v2_util import bootstrap_tenant_for_v2_test
 
 
 def _coerce_api_datetime(value):
@@ -1602,7 +1604,7 @@ class RoleBindingListViewSetTest(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleBindingViewSetTest(IdentityRequest):
     """Test the RoleBindingViewSet by-subject endpoint."""
 
@@ -1613,18 +1615,10 @@ class RoleBindingViewSetTest(IdentityRequest):
         super().setUp()
         self.client = APIClient()
 
-        # Create workspace hierarchy (root -> default -> standard)
-        self.root_workspace = Workspace.objects.create(
-            name=Workspace.SpecialNames.ROOT,
-            tenant=self.tenant,
-            type=Workspace.Types.ROOT,
-        )
-        self.default_workspace = Workspace.objects.create(
-            name=Workspace.SpecialNames.DEFAULT,
-            tenant=self.tenant,
-            type=Workspace.Types.DEFAULT,
-            parent=self.root_workspace,
-        )
+        bootstrap_result = bootstrap_tenant_for_v2_test(self.tenant)
+        self.root_workspace = bootstrap_result.root_workspace
+        self.default_workspace = bootstrap_result.default_workspace
+
         self.workspace = Workspace.objects.create(
             name="Test Workspace",
             description="Test workspace description",
@@ -1633,8 +1627,7 @@ class RoleBindingViewSetTest(IdentityRequest):
             parent=self.default_workspace,
         )
 
-        # TenantMapping required for V2 write operations (e.g. PUT by-subject)
-        TenantMapping.objects.get_or_create(tenant=self.tenant, defaults={})
+        set_v2_opt_in_state(self.tenant, True)
 
         # Create permission and role
         self.permission = Permission.objects.create(
@@ -3265,6 +3258,8 @@ class DefaultBindingsAPITests(TestCase):
         self.mapping = bootstrapped.mapping
         self.default_workspace = bootstrapped.default_workspace
 
+        set_v2_opt_in_state(self.tenant, True)
+
         # Set up API client with proper headers
         self.client = APIClient()
         self.headers = {
@@ -3486,7 +3481,7 @@ class DefaultBindingsAPITests(TestCase):
         self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 3)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class BatchCreateViewTests(IdentityRequest):
     """Tests for the :batchCreate endpoint on RoleBindingViewSet."""
 
@@ -3503,6 +3498,9 @@ class BatchCreateViewTests(IdentityRequest):
         bootstrapped = V2TenantBootstrapService(InMemoryRelationReplicator()).bootstrap_tenant(self.tenant)
         self.root_workspace = bootstrapped.root_workspace
         self.default_workspace = bootstrapped.default_workspace
+
+        set_v2_opt_in_state(self.tenant, True)
+
         self.client = APIClient()
 
         self.workspace = Workspace.objects.create(
@@ -3888,7 +3886,7 @@ class BatchCreateViewTests(IdentityRequest):
         self._assert_problem_details(response, 404, f"workspace with id '{fake_ws_id}' not found", "detail")
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class UpdateRoleBindingsBySubjectAPITests(IdentityRequest):
     """Tests for PUT /role-bindings/by-subject/ endpoint."""
 
@@ -3905,6 +3903,9 @@ class UpdateRoleBindingsBySubjectAPITests(IdentityRequest):
         bootstrapped = V2TenantBootstrapService(InMemoryRelationReplicator()).bootstrap_tenant(self.tenant)
         self.root_workspace = bootstrapped.root_workspace
         self.default_workspace = bootstrapped.default_workspace
+
+        set_v2_opt_in_state(self.tenant, True)
+
         self.client = APIClient()
 
         # Create workspace hierarchy (root and default from bootstrap)
@@ -4443,7 +4444,7 @@ _SENTINEL = RuntimeError("_atomic_action sentinel")
 _ATOMIC_ACTION_PATH = "management.v2_mixins.AtomicOperationsMixin._atomic_action"
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleBindingViewSetAtomicWiringTests(IdentityRequest):
     """Verify RoleBindingViewSet write endpoints delegate to _atomic_action."""
 
@@ -4454,6 +4455,9 @@ class RoleBindingViewSetAtomicWiringTests(IdentityRequest):
         bootstrapped = V2TenantBootstrapService(InMemoryRelationReplicator()).bootstrap_tenant(self.tenant)
         self.root_workspace = bootstrapped.root_workspace
         self.default_workspace = bootstrapped.default_workspace
+
+        set_v2_opt_in_state(self.tenant, True)
+
         self.client = APIClient()
 
         self.workspace = Workspace.objects.create(
@@ -4531,7 +4535,7 @@ class RoleBindingViewSetAtomicWiringTests(IdentityRequest):
         mock_atomic.assert_called_once()
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True)
+@override_settings(V2_APIS_ENABLED=True)
 class RoleBindingAuditLogTests(TransactionalIdentityRequest):
     """Tests for role binding audit logging."""
 
@@ -4542,23 +4546,18 @@ class RoleBindingAuditLogTests(TransactionalIdentityRequest):
         self.tenant.save()
         self.client = APIClient()
 
-        self.root_workspace = Workspace.objects.create(
-            name=Workspace.SpecialNames.ROOT,
-            tenant=self.tenant,
-            type=Workspace.Types.ROOT,
-        )
-        self.default_workspace = Workspace.objects.create(
-            name=Workspace.SpecialNames.DEFAULT,
-            tenant=self.tenant,
-            type=Workspace.Types.DEFAULT,
-            parent=self.root_workspace,
-        )
+        bootstrap_result = bootstrap_tenant_for_v2_test(self.tenant)
+        self.root_workspace = bootstrap_result.root_workspace
+        self.default_workspace = bootstrap_result.default_workspace
+
         self.workspace = Workspace.objects.create(
             name="Test Workspace",
             tenant=self.tenant,
             type=Workspace.Types.STANDARD,
             parent=self.default_workspace,
         )
+
+        set_v2_opt_in_state(self.tenant, True)
 
         self.permission1 = Permission.objects.create(permission="app:resource:read", tenant=self.tenant)
         self.permission2 = Permission.objects.create(permission="app:resource:write", tenant=self.tenant)
@@ -4579,8 +4578,6 @@ class RoleBindingAuditLogTests(TransactionalIdentityRequest):
             user_id="testuser",
             type=Principal.Types.USER,
         )
-
-        TenantMapping.objects.get_or_create(tenant=self.tenant)
 
     def tearDown(self):
         AuditLog.objects.filter(tenant=self.tenant).delete()

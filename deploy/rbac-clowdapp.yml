@@ -794,8 +794,6 @@ objects:
             value: ${V2_APIS_ENABLED}
           - name: V2_READ_ONLY_API_MODE
             value: ${V2_READ_ONLY_API_MODE}
-          - name: V2_EDIT_API_ENABLED
-            value: ${V2_EDIT_API_ENABLED}
           - name: OCM_V2_ENABLED
             value: ${OCM_V2_ENABLED}
           - name: KESSEL_TENANT_AUTH_ENABLED
@@ -2017,9 +2015,6 @@ parameters:
   value: 'True'
 - name: V2_READ_ONLY_API_MODE
   description: Enforce GET only on RBAC v2 APIs only
-  value: 'False'
-- name: V2_EDIT_API_ENABLED
-  description: Fallback for feature flag to enable v2 edit APIs and block v1 write APIs per org
   value: 'False'
 - name: OCM_V2_ENABLED
   description: Fallback for the global rbac.ocm-v2.enabled feature flag for OCM integrations

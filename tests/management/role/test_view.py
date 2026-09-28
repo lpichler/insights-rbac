@@ -42,6 +42,7 @@ from management.models import (
 from management.relation_replicator.noop_replicator import NoopReplicator
 from management.role.v2_model import CustomRoleV2
 from management.role_binding.model import RoleBinding
+from management.tenant_mapping.v2_activation import set_v2_opt_in_state
 from management.tenant_service.v2 import V2TenantBootstrapService
 from migration_tool.in_memory_tuples import (
     InMemoryRelationReplicator,
@@ -375,15 +376,15 @@ class RoleViewsetTests(IdentityRequest):
         response = client.post(url, test_data, format="json", **self.headers)
         return response
 
-    @patch("management.permissions.v2_edit_api_access.FEATURE_FLAGS.is_v2_edit_api_enabled", return_value=True)
-    def test_create_role_blocked_when_workspaces_enabled(self, mock_is_v2_edit_enabled):
+    def test_create_role_blocked_when_workspaces_enabled(self):
         """Test that V1 role create returns 403 when workspaces feature flag is enabled for the org."""
+        set_v2_opt_in_state(self.tenant, True)
+
         role_name = "BlockedV1Role"
         access_data = [{"permission": "app:*:read", "resourceDefinitions": []}]
         response = self.create_role(role_name, in_access_data=access_data)
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertIn("workspaces", str(response.data).lower())
-        mock_is_v2_edit_enabled.assert_called_once_with(self.customer_data["org_id"])
 
     @patch("core.kafka.RBACProducer.send_kafka_message")
     def test_create_role_success(self, send_kafka_message):

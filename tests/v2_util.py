@@ -1,5 +1,7 @@
 from typing import Callable, Optional
 
+from django.db import transaction
+
 from api.models import Tenant
 from management.group.platform import GlobalPolicyIdService
 from management.models import Permission, Role
@@ -111,6 +113,7 @@ def make_read_tuples_mock(tuples: InMemoryTuples) -> Callable[[str, str, str, st
     return read_tuples_fn
 
 
+@transaction.atomic
 def bootstrap_tenant_for_v2_test(tenant: Tenant, tuples: Optional[InMemoryTuples] = None) -> BootstrappedTenant:
     """
     Bootstrap a tenant for V2 testing.
