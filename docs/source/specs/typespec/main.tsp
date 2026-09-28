@@ -127,7 +127,11 @@ scalar FieldMask extends string;
 
 /**
  * Limit for pagination. Controls the maximum number of items returned.
- * Use -1 to return all objects.
+ * Default: 10. Use -1 to return all objects in a single response.
+ *
+ * Maximum values (enforced server-side, not in schema):
+ * - Workspaces: 3000
+ * - All other list endpoints: 1000
  */
 scalar Limit extends int64;
 
@@ -239,7 +243,6 @@ namespace Problems {
         InvalidRequest:"http://project-kessel.org/problems/invalid-request",
         AlreadyExists:"http://project-kessel.org/problems/already-exists",
         WorkspaceNotEmpty:"http://project-kessel.org/problems/workspace-not-empty",
-        ServiceUnavailable:"http://project-kessel.org/problems/service-unavailable",
         Conflict:"http://project-kessel.org/problems/conflict",
     }
 
@@ -282,17 +285,6 @@ namespace Problems {
     model Problem500 extends ProblemDetails<Status = 500>{
         type: ProblemType.InternalError,
         title: "Unexpected error occurred.";
-    }
-
-    @error
-    model Problem503 extends ProblemDetails<Status = 503>{
-        type: ProblemType.ServiceUnavailable,
-        title: "A downstream dependency is temporarily unavailable. Please retry shortly.",
-        @example("Inventory authorization is temporarily unavailable. Please try again shortly.")
-        detail: string,
-        @header("Retry-After")
-        @example("1")
-        retryAfter: string
     }
 
     @error
@@ -545,7 +537,7 @@ namespace Workspaces {
         data: Workspace[];
     }
 
-    @doc("List workspaces in a tenant")
+    @doc("List workspaces in a tenant. Uses offset pagination (`limit`, `offset`). Max limit 3000.")
     @summary("List workspaces in a tenant")
 
     @opExample(
@@ -602,7 +594,7 @@ namespace Workspaces {
         @doc("When true, list responses include ancestor workspaces for tree navigation and fallback workspaces (root, default, ungrouped) when the user has no explicit access. When false (default), only workspaces with explicit Inventory permission are returned.")
         @example(false)
         @query with_ancestry?: boolean = false;
-    ): WorkspaceListResponse | Problems.CommonProblems | Problems.Problem503;
+    ): WorkspaceListResponse | Problems.CommonProblems;
 
     @doc("Create workspace in tenant")
     @summary("Create workspace in tenant")
@@ -806,7 +798,7 @@ namespace Workspaces {
         with_ancestry?: boolean = false;
     }
 
-    @doc("Query workspaces by a list of IDs")
+    @doc("Query workspaces by a list of IDs. Uses offset pagination (`limit`, `offset` in query string). Max limit 3000.")
     @summary("Query workspaces by a list of IDs")
     @route("query/")
     @opExample(#{
@@ -856,7 +848,7 @@ namespace Workspaces {
         @query order_by?: string = "name";
 
         @body body: WorkspaceQueryRequest;
-    ): WorkspaceListResponse | Problems.CommonProblems | Problems.Problem503;
+    ): WorkspaceListResponse | Problems.CommonProblems;
 }
 
 @route("/role-bindings/")
@@ -1057,7 +1049,7 @@ namespace RoleBindings {
         sources?: Resource[];
     }
 
-    @doc("List role bindings grouped by subject. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.")
+    @doc("List role bindings grouped by subject. Uses cursor pagination (`limit`, `cursor`). Max limit 1000. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.")
     @summary("List role bindings grouped by subject")
     @route("by-subject/")
     @opExample(#{
@@ -1359,7 +1351,7 @@ namespace RoleBindings {
         sources?: Resource[];
     }
 
-    @doc("List role bindings")
+    @doc("List role bindings. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.")
     @summary("List role bindings")
     @opExample(#{
         parameters: #{
@@ -1482,7 +1474,7 @@ namespace Roles {
         ...KesselRBAC.Role;
     }
 
-    @doc("List the roles for a tenant")
+    @doc("List the roles for a tenant. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.")
     @summary("List the roles for a tenant")
     @opExample(#{
         parameters: #{
@@ -1728,7 +1720,7 @@ enum PrincipalTypeFilter {
 enum GroupScope {
     @doc("Return all groups in the organization (default)")
     org_id,
-    @doc("Return only groups the calling principal belongs to")
+    @doc("Return only groups the calling principal belongs to. Matches user principals only, not service accounts.")
     principal,
 }
 
@@ -1795,7 +1787,7 @@ model PrincipalListResponse {
 @doc("Operations about principals")
 namespace Principals {
 
-    @doc("List the principals for a tenant")
+    @doc("List the principals for a tenant. Uses offset pagination (`limit`, `offset`). Max limit 1000.")
     @summary("List the principals for a tenant")
     @opExample(#{
         parameters: #{
@@ -2074,17 +2066,21 @@ namespace Groups {
         @query name?: string;
         @doc("Filter by group UUIDs")
         @query(#{explode: false}) uuid?: UUID[];
-        @doc("Filter groups that contain this username as a member")
+        @doc("Filter groups that contain this username as a member. Matches user principals only, not service accounts.")
+        @maxLength(150)
         @query username?: string;
-        @doc("Exclude groups that contain this username. Mutually exclusive with username.")
+        @doc("Exclude groups that contain this username. Matches user principals only, not service accounts. Mutually exclusive with username.")
+        @maxLength(150)
         @query exclude_username?: string;
-        @doc("Filter groups by comma-separated role names. Use role_discriminator to control match logic.")
+        @doc("Filter groups by comma-separated role names (maximum 50). Use role_discriminator to control match logic.")
+        @maxLength(2000)
         @query role_names?: string;
         @doc("Controls how role_names are matched: 'any' returns groups with at least one matching role; 'all' requires every role. Only used with role_names.")
         @query role_discriminator?: RoleDiscriminator = RoleDiscriminator.any;
-        @doc("Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.")
+        @doc("Filter groups by comma-separated principal usernames (maximum 50). Returns groups that contain ALL specified principals. Matches user principals only, not service accounts.")
+        @maxLength(2000)
         @query principals?: string;
-        @doc("Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to.")
+        @doc("Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to. Matches user principals only, not service accounts.")
         @query scope?: GroupScope = GroupScope.org_id;
         @doc("Filter by system group flag")
         @query system?: boolean;
@@ -2144,9 +2140,9 @@ namespace Groups {
         @query username?: string;
         @doc("Filter by principal username (case-insensitive substring match). Applies to both user and service-account principals.")
         @query principal_username?: string;
-        @doc("When true, return only usernames without enrichment from external identity services. Applies to user principals only.")
+        @doc("Accepted for API compatibility. This endpoint does not enrich user principals from external identity services, so this flag has no effect.")
         @query username_only?: boolean = false;
-        @doc("When true, return only org admin users. Applies to user principals only.")
+        @doc("When true, return only org admin users. Applies to user principals only. Not yet implemented: org-admin status requires a BOP/IT lookup not available to this endpoint's local-only lookups; the flag is currently accepted but has no filtering effect.")
         @query admin_only?: boolean = false;
         @doc("Filter service accounts by display name (substring match). Only used when principal_type is 'service-account' or 'all'.")
         @query service_account_name?: string;
@@ -2161,10 +2157,10 @@ namespace Groups {
 
     @doc("Add principals by username. service_accounts may also be supplied.")
     model AddUsernamesInput {
-        @doc("Usernames to add. Must contain at least one item.")
+        @doc("Usernames to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.")
         @minItems(1)
         usernames: string[];
-        @doc("Service account client IDs to add.")
+        @doc("Service account client IDs to add. At most 100 unique identifiers are allowed after deduplication.")
         @example(#["abc-123-def"])
         @minItems(1)
         service_accounts?: string[];
@@ -2172,10 +2168,10 @@ namespace Groups {
 
     @doc("Add principals by service account client ID. usernames may also be supplied.")
     model AddServiceAccountsInput {
-        @doc("Usernames to add.")
+        @doc("Usernames to add. At most 100 unique identifiers are allowed after deduplication.")
         @minItems(1)
         usernames?: string[];
-        @doc("Service account client IDs to add. Must contain at least one item.")
+        @doc("Service account client IDs to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.")
         @example(#["abc-123-def"])
         @minItems(1)
         service_accounts: string[];
@@ -2208,9 +2204,9 @@ namespace Groups {
     @summary("Remove principals from a group in bulk")
     @delete op removePrincipals(
         @path uuid: UUID;
-        @doc("Comma-separated usernames to remove from the group")
+        @doc("Comma-separated usernames to remove from the group. At most 100 unique identifiers after deduplication.")
         @query usernames?: string;
-        @doc("Comma-separated service account client IDs to remove from the group")
+        @doc("Comma-separated service account client IDs to remove from the group. At most 100 unique identifiers after deduplication.")
         @query service_accounts?: string;
     ): NoContentResponse | Problems.CommonProblems | Problems.Problem404;
 }

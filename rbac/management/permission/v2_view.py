@@ -19,20 +19,16 @@
 from django.db.models import Q
 from django.db.models.functions import Collate
 from django_filters import rest_framework as filters
+from management.base_viewsets import BaseV2ViewSet
 from management.filters import CommonFilters
-from management.models import Access, Permission, Role
+from management.models import Permission
 from management.permission.service import PermissionService
 from management.permission.v2_serializer import PermissionV2ResponseSerializer, validate_fields_parameter
 from management.permissions.permission_access import PermissionAccessPermission
 from management.role.v2_role_scope import v2_role_excluded_applications
 from management.utils import validate_and_get_key, validate_uuid
-from rest_framework import mixins, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
-from rest_framework.settings import api_settings
-
-from api.common.pagination import V2ResultsSetPagination
-from api.common.renderers import ProblemJSONRenderer
 
 VALID_BOOLEAN_PARAM_VALS = ["true", "false"]
 
@@ -70,9 +66,7 @@ class PermissionV2Filter(CommonFilters):
             role_uuids_list = role_uuid_string.split(",")
             for uuid in role_uuids_list:
                 validate_uuid(uuid)
-            roles = Role.objects.filter(uuid__in=role_uuids_list, tenant=self.request.tenant)
-            permission_ids_to_exclude = Access.objects.filter(role__in=roles).values_list("permission_id", flat=True)
-            return queryset.exclude(id__in=permission_ids_to_exclude)
+            return PermissionService().exclude_permissions_for_roles(queryset, role_uuids_list, self.request.tenant)
         return queryset
 
     def allowed_only_filter(self, queryset, field, value):
@@ -91,28 +85,38 @@ class PermissionV2Filter(CommonFilters):
     allowed_only = filters.CharFilter(field_name="allowed_only", method="allowed_only_filter")
 
 
-class PermissionV2ViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+class PermissionV2ViewSet(BaseV2ViewSet):
     """PermissionV2 ViewSet.
 
     A viewset that provides the `list()` action and an `options()` action for
     discovering distinct field values.
+
+    No ``AccessFilterBackend`` is used because permission visibility is
+    tenant-wide all-or-nothing; ``PermissionAccessPermission`` gates access
+    at the endpoint level.
     """
 
     queryset = (
         Permission.objects.all().annotate(permission_collate=Collate("permission", "C")).order_by("permission_collate")
     )
 
-    renderer_classes = api_settings.DEFAULT_RENDERER_CLASSES + [ProblemJSONRenderer]
     permission_classes = (PermissionAccessPermission,)
     filter_backends = (filters.DjangoFilterBackend,)
     filterset_class = PermissionV2Filter
     serializer_class = PermissionV2ResponseSerializer
-    pagination_class = V2ResultsSetPagination
     http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
-        """Exclude permissions belonging to applications excluded from V2 role scope."""
-        queryset = super().get_queryset()
+        """Scope permissions to the requesting tenant and exclude v2-role-scoped applications.
+
+        Overrides ``BaseV2ViewSet.get_queryset()`` because ``Permission``
+        lacks the ``name`` and ``modified`` fields used in the base ordering.
+        """
+        queryset = (
+            Permission.objects.filter(tenant=self.request.tenant)
+            .annotate(permission_collate=Collate("permission", "C"))
+            .order_by("permission_collate")
+        )
 
         excluded_apps = v2_role_excluded_applications()
         if excluded_apps:

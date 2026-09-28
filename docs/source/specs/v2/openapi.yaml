@@ -35,23 +35,26 @@ paths:
         - name: username
           in: query
           required: false
-          description: Filter groups that contain this username as a member
+          description: Filter groups that contain this username as a member. Matches user principals only, not service accounts.
           schema:
             type: string
+            maxLength: 150
           explode: false
         - name: exclude_username
           in: query
           required: false
-          description: Exclude groups that contain this username. Mutually exclusive with username.
+          description: Exclude groups that contain this username. Matches user principals only, not service accounts. Mutually exclusive with username.
           schema:
             type: string
+            maxLength: 150
           explode: false
         - name: role_names
           in: query
           required: false
-          description: Filter groups by comma-separated role names. Use role_discriminator to control match logic.
+          description: Filter groups by comma-separated role names (maximum 50). Use role_discriminator to control match logic.
           schema:
             type: string
+            maxLength: 2000
           explode: false
         - name: role_discriminator
           in: query
@@ -65,14 +68,15 @@ paths:
         - name: principals
           in: query
           required: false
-          description: Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.
+          description: Filter groups by comma-separated principal usernames (maximum 50). Returns groups that contain ALL specified principals. Matches user principals only, not service accounts.
           schema:
             type: string
+            maxLength: 2000
           explode: false
         - name: scope
           in: query
           required: false
-          description: "Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to."
+          description: "Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to. Matches user principals only, not service accounts."
           schema:
             allOf:
               - $ref: '#/components/schemas/GroupScope'
@@ -395,7 +399,7 @@ paths:
         - name: username_only
           in: query
           required: false
-          description: When true, return only usernames without enrichment from external identity services. Applies to user principals only.
+          description: Accepted for API compatibility. This endpoint does not enrich user principals from external identity services, so this flag has no effect.
           schema:
             type: boolean
             default: false
@@ -403,7 +407,7 @@ paths:
         - name: admin_only
           in: query
           required: false
-          description: When true, return only org admin users. Applies to user principals only.
+          description: "When true, return only org admin users. Applies to user principals only. Not yet implemented: org-admin status requires a BOP/IT lookup not available to this endpoint's local-only lookups; the flag is currently accepted but has no filtering effect."
           schema:
             type: boolean
             default: false
@@ -559,14 +563,14 @@ paths:
         - name: usernames
           in: query
           required: false
-          description: Comma-separated usernames to remove from the group
+          description: Comma-separated usernames to remove from the group. At most 100 unique identifiers after deduplication.
           schema:
             type: string
           explode: false
         - name: service_accounts
           in: query
           required: false
-          description: Comma-separated service account client IDs to remove from the group
+          description: Comma-separated service account client IDs to remove from the group. At most 100 unique identifiers after deduplication.
           schema:
             type: string
           explode: false
@@ -913,7 +917,7 @@ paths:
     get:
       operationId: Principals_list
       summary: List the principals for a tenant
-      description: List the principals for a tenant
+      description: List the principals for a tenant. Uses offset pagination (`limit`, `offset`). Max limit 1000.
       parameters:
         - name: limit
           in: query
@@ -1069,7 +1073,7 @@ paths:
     get:
       operationId: RoleBindings_list
       summary: List role bindings
-      description: List role bindings
+      description: List role bindings. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.
       parameters:
         - name: limit
           in: query
@@ -1241,7 +1245,7 @@ paths:
     get:
       operationId: RoleBindings_listBySubject
       summary: List role bindings grouped by subject
-      description: List role bindings grouped by subject. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.
+      description: List role bindings grouped by subject. Uses cursor pagination (`limit`, `cursor`). Max limit 1000. subject_type (optional) is user or group only, with subject_id as UUID. granted_subject_type, granted_subject_id, and granted_subject.principal.user_id are not query parameters on this path—use GET /role-bindings/ for those filters.
       parameters:
         - name: limit
           in: query
@@ -1622,7 +1626,7 @@ paths:
     get:
       operationId: Roles_list
       summary: List the roles for a tenant
-      description: List the roles for a tenant
+      description: List the roles for a tenant. Uses cursor pagination (`limit`, `cursor`). Max limit 1000.
       parameters:
         - name: limit
           in: query
@@ -2066,7 +2070,7 @@ paths:
     get:
       operationId: Workspaces_list
       summary: List workspaces in a tenant
-      description: List workspaces in a tenant
+      description: List workspaces in a tenant. Uses offset pagination (`limit`, `offset`). Max limit 3000.
       parameters:
         - name: limit
           in: query
@@ -2181,17 +2185,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problems.Problem500'
-        '503':
-          description: Service unavailable.
-          headers:
-            Retry-After:
-              required: true
-              schema:
-                type: string
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problems.Problem503'
       tags:
         - Workspaces
     post:
@@ -2256,7 +2249,7 @@ paths:
     post:
       operationId: Workspaces_query
       summary: Query workspaces by a list of IDs
-      description: Query workspaces by a list of IDs
+      description: Query workspaces by a list of IDs. Uses offset pagination (`limit`, `offset` in query string). Max limit 3000.
       parameters:
         - name: limit
           in: query
@@ -2332,17 +2325,6 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problems.Problem500'
-        '503':
-          description: Service unavailable.
-          headers:
-            Retry-After:
-              required: true
-              schema:
-                type: string
-          content:
-            application/problem+json:
-              schema:
-                $ref: '#/components/schemas/Problems.Problem503'
       tags:
         - Workspaces
       requestBody:
@@ -2745,13 +2727,13 @@ components:
           items:
             type: string
           minItems: 1
-          description: Usernames to add.
+          description: Usernames to add. At most 100 unique identifiers are allowed after deduplication.
         service_accounts:
           type: array
           items:
             type: string
           minItems: 1
-          description: Service account client IDs to add. Must contain at least one item.
+          description: Service account client IDs to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.
           example:
             - abc-123-def
       description: Add principals by service account client ID. usernames may also be supplied.
@@ -2765,13 +2747,13 @@ components:
           items:
             type: string
           minItems: 1
-          description: Usernames to add. Must contain at least one item.
+          description: Usernames to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.
         service_accounts:
           type: array
           items:
             type: string
           minItems: 1
-          description: Service account client IDs to add.
+          description: Service account client IDs to add. At most 100 unique identifiers are allowed after deduplication.
           example:
             - abc-123-def
       description: Add principals by username. service_accounts may also be supplied.
@@ -2877,7 +2859,11 @@ components:
       format: int64
       description: |-
         Limit for pagination. Controls the maximum number of items returned.
-        Use -1 to return all objects.
+        Default: 10. Use -1 to return all objects in a single response.
+
+        Maximum values (enforced server-side, not in schema):
+        - Workspaces: 3000
+        - All other list endpoints: 1000
     Offset:
       type: integer
       format: int64
@@ -3376,40 +3362,6 @@ components:
             instance:
               type: string
               format: uri
-    Problems.Problem503:
-      type: object
-      required:
-        - type
-        - title
-        - detail
-      properties:
-        type:
-          type: string
-          enum:
-            - http://project-kessel.org/problems/service-unavailable
-        title:
-          type: string
-          enum:
-            - A downstream dependency is temporarily unavailable. Please retry shortly.
-        detail:
-          type: string
-          example: Inventory authorization is temporarily unavailable. Please try again shortly.
-      allOf:
-        - type: object
-          properties:
-            type:
-              $ref: '#/components/schemas/Problems.ProblemType'
-            status:
-              type: number
-              enum:
-                - 503
-            title:
-              type: string
-            detail:
-              type: string
-            instance:
-              type: string
-              format: uri
     Problems.ProblemType:
       type: string
       enum:
@@ -3420,7 +3372,6 @@ components:
         - http://project-kessel.org/problems/invalid-request
         - http://project-kessel.org/problems/already-exists
         - http://project-kessel.org/problems/workspace-not-empty
-        - http://project-kessel.org/problems/service-unavailable
         - http://project-kessel.org/problems/conflict
     Problems.Workspace.Problem400WorkspaceNotEmpty:
       type: object

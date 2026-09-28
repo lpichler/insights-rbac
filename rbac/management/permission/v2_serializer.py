@@ -78,5 +78,10 @@ class PermissionV2ResponseSerializer(serializers.ModelSerializer):
                 self.fields.pop(field_name)
 
     def get_requires(self, obj):
-        """Get dependent/required permissions."""
-        return list(obj.permissions.all().values_list("permission", flat=True))
+        """Get dependent/required permissions.
+
+        Reads from prefetched ``permissions`` objects rather than calling
+        ``values_list()`` which would issue a new query per row, bypassing
+        the ``prefetch_related("permissions")`` applied by the viewset.
+        """
+        return [p.permission for p in obj.permissions.all()]

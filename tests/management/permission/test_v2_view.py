@@ -23,6 +23,7 @@ from django.urls import clear_url_caches, reverse
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from api.models import Tenant
 from management.models import Access, Permission, Role
 from rbac import urls
 from tests.identity_request import IdentityRequest
@@ -110,6 +111,8 @@ class PermissionV2ViewsetTests(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         permissions = {p["permission"] for p in response.data["data"]}
         self.assertNotIn("rbac:roles:read", permissions)
+        # Verify the Access assignment itself is preserved (filter, not delete).
+        self.assertTrue(Access.objects.filter(permission=self.permissionA, role=self.roleA).exists())
 
     def test_list_permissions_invalid_exclude_roles(self):
         """Test that an invalid role uuid in exclude_roles returns a 400."""
@@ -157,3 +160,58 @@ class PermissionV2ViewsetTests(IdentityRequest):
         response = self.client.get(f"{self.options_url}?field=bogus", **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_list_permissions_requires_prefetch_efficiency(self):
+        """Test that selecting requires uses prefetch without per-permission queries.
+
+        Adding more permissions with dependencies should not increase query count
+        proportionally — the prefetch_related handles them in a single batch.
+        """
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+
+        # Warmup: prime Django's internal caches (content types, auth, etc.)
+        # so they don't inflate the baseline query count.
+        self.client.get(f"{self.list_url}?fields=permission,requires", **self.headers)
+
+        # Baseline: existing permissions (one has a dependency).
+        with CaptureQueriesContext(connection) as baseline_ctx:
+            response = self.client.get(f"{self.list_url}?fields=permission,requires", **self.headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        baseline_count = len(baseline_ctx)
+
+        # Add more permissions with dependencies.
+        dep1 = Permission.objects.create(permission="cost:report:read", tenant=self.tenant)
+        dep2 = Permission.objects.create(permission="cost:report:write", tenant=self.tenant)
+        parent = Permission.objects.create(permission="cost:report:admin", tenant=self.tenant)
+        parent.permissions.add(dep1, dep2)
+
+        with CaptureQueriesContext(connection) as expanded_ctx:
+            response = self.client.get(f"{self.list_url}?fields=permission,requires", **self.headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        expanded_count = len(expanded_ctx)
+
+        admin_perm = next(p for p in response.data["data"] if p["permission"] == "cost:report:admin")
+        self.assertCountEqual(admin_perm["requires"], ["cost:report:read", "cost:report:write"])
+
+        # With prefetch, query count stays constant regardless of extra deps.
+        # Without prefetch (N+1), each new dependency-bearing permission adds a query.
+        self.assertEqual(expanded_count, baseline_count, "Query count should stay constant with prefetch_related")
+
+    def test_list_permissions_tenant_isolation(self):
+        """Test that permissions from another tenant are not returned."""
+        other_tenant = Tenant.objects.create(
+            tenant_name="other_org",
+            org_id="99999",
+            ready=True,
+        )
+        Permission.objects.create(permission="other:secret:read", tenant=other_tenant)
+
+        response = self.client.get(self.list_url, **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        permissions = {p["permission"] for p in response.data["data"]}
+        self.assertNotIn("other:secret:read", permissions)
+        self.assertEqual(len(response.data["data"]), 4)
+
+        other_tenant.delete()
