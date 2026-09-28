@@ -58,9 +58,10 @@
             "name": "username",
             "in": "query",
             "required": false,
-            "description": "Filter groups that contain this username as a member",
+            "description": "Filter groups that contain this username as a member. Matches user principals only, not service accounts.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 150
             },
             "explode": false
           },
@@ -68,9 +69,10 @@
             "name": "exclude_username",
             "in": "query",
             "required": false,
-            "description": "Exclude groups that contain this username. Mutually exclusive with username.",
+            "description": "Exclude groups that contain this username. Matches user principals only, not service accounts. Mutually exclusive with username.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 150
             },
             "explode": false
           },
@@ -78,9 +80,10 @@
             "name": "role_names",
             "in": "query",
             "required": false,
-            "description": "Filter groups by comma-separated role names. Use role_discriminator to control match logic.",
+            "description": "Filter groups by comma-separated role names (maximum 50). Use role_discriminator to control match logic.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 2000
             },
             "explode": false
           },
@@ -103,9 +106,10 @@
             "name": "principals",
             "in": "query",
             "required": false,
-            "description": "Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.",
+            "description": "Filter groups by comma-separated principal usernames (maximum 50). Returns groups that contain ALL specified principals. Matches user principals only, not service accounts.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "maxLength": 2000
             },
             "explode": false
           },
@@ -113,7 +117,7 @@
             "name": "scope",
             "in": "query",
             "required": false,
-            "description": "Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to.",
+            "description": "Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to. Matches user principals only, not service accounts.",
             "schema": {
               "allOf": [
                 {
@@ -637,7 +641,7 @@
             "name": "username_only",
             "in": "query",
             "required": false,
-            "description": "When true, return only usernames without enrichment from external identity services. Applies to user principals only.",
+            "description": "Accepted for API compatibility. This endpoint does not enrich user principals from external identity services, so this flag has no effect.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -648,7 +652,7 @@
             "name": "admin_only",
             "in": "query",
             "required": false,
-            "description": "When true, return only org admin users. Applies to user principals only.",
+            "description": "When true, return only org admin users. Applies to user principals only. Not yet implemented: org-admin status requires a BOP/IT lookup not available to this endpoint's local-only lookups; the flag is currently accepted but has no filtering effect.",
             "schema": {
               "type": "boolean",
               "default": false
@@ -897,7 +901,7 @@
             "name": "usernames",
             "in": "query",
             "required": false,
-            "description": "Comma-separated usernames to remove from the group",
+            "description": "Comma-separated usernames to remove from the group. At most 100 unique identifiers after deduplication.",
             "schema": {
               "type": "string"
             },
@@ -907,7 +911,7 @@
             "name": "service_accounts",
             "in": "query",
             "required": false,
-            "description": "Comma-separated service account client IDs to remove from the group",
+            "description": "Comma-separated service account client IDs to remove from the group. At most 100 unique identifiers after deduplication.",
             "schema": {
               "type": "string"
             },
@@ -4276,7 +4280,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Usernames to add."
+            "description": "Usernames to add. At most 100 unique identifiers are allowed after deduplication."
           },
           "service_accounts": {
             "type": "array",
@@ -4284,7 +4288,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Service account client IDs to add. Must contain at least one item.",
+            "description": "Service account client IDs to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.",
             "example": [
               "abc-123-def"
             ]
@@ -4304,7 +4308,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Usernames to add. Must contain at least one item."
+            "description": "Usernames to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication."
           },
           "service_accounts": {
             "type": "array",
@@ -4312,7 +4316,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Service account client IDs to add.",
+            "description": "Service account client IDs to add. At most 100 unique identifiers are allowed after deduplication.",
             "example": [
               "abc-123-def"
             ]

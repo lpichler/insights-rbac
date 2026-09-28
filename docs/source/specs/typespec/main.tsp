@@ -1720,7 +1720,7 @@ enum PrincipalTypeFilter {
 enum GroupScope {
     @doc("Return all groups in the organization (default)")
     org_id,
-    @doc("Return only groups the calling principal belongs to")
+    @doc("Return only groups the calling principal belongs to. Matches user principals only, not service accounts.")
     principal,
 }
 
@@ -2066,17 +2066,21 @@ namespace Groups {
         @query name?: string;
         @doc("Filter by group UUIDs")
         @query(#{explode: false}) uuid?: UUID[];
-        @doc("Filter groups that contain this username as a member")
+        @doc("Filter groups that contain this username as a member. Matches user principals only, not service accounts.")
+        @maxLength(150)
         @query username?: string;
-        @doc("Exclude groups that contain this username. Mutually exclusive with username.")
+        @doc("Exclude groups that contain this username. Matches user principals only, not service accounts. Mutually exclusive with username.")
+        @maxLength(150)
         @query exclude_username?: string;
-        @doc("Filter groups by comma-separated role names. Use role_discriminator to control match logic.")
+        @doc("Filter groups by comma-separated role names (maximum 50). Use role_discriminator to control match logic.")
+        @maxLength(2000)
         @query role_names?: string;
         @doc("Controls how role_names are matched: 'any' returns groups with at least one matching role; 'all' requires every role. Only used with role_names.")
         @query role_discriminator?: RoleDiscriminator = RoleDiscriminator.any;
-        @doc("Filter groups by comma-separated principal usernames. Returns groups that contain ALL specified principals.")
+        @doc("Filter groups by comma-separated principal usernames (maximum 50). Returns groups that contain ALL specified principals. Matches user principals only, not service accounts.")
+        @maxLength(2000)
         @query principals?: string;
-        @doc("Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to.")
+        @doc("Scope filter: 'org_id' (default) returns all groups in the organization; 'principal' returns only groups the calling user belongs to. Matches user principals only, not service accounts.")
         @query scope?: GroupScope = GroupScope.org_id;
         @doc("Filter by system group flag")
         @query system?: boolean;
@@ -2136,9 +2140,9 @@ namespace Groups {
         @query username?: string;
         @doc("Filter by principal username (case-insensitive substring match). Applies to both user and service-account principals.")
         @query principal_username?: string;
-        @doc("When true, return only usernames without enrichment from external identity services. Applies to user principals only.")
+        @doc("Accepted for API compatibility. This endpoint does not enrich user principals from external identity services, so this flag has no effect.")
         @query username_only?: boolean = false;
-        @doc("When true, return only org admin users. Applies to user principals only.")
+        @doc("When true, return only org admin users. Applies to user principals only. Not yet implemented: org-admin status requires a BOP/IT lookup not available to this endpoint's local-only lookups; the flag is currently accepted but has no filtering effect.")
         @query admin_only?: boolean = false;
         @doc("Filter service accounts by display name (substring match). Only used when principal_type is 'service-account' or 'all'.")
         @query service_account_name?: string;
@@ -2153,10 +2157,10 @@ namespace Groups {
 
     @doc("Add principals by username. service_accounts may also be supplied.")
     model AddUsernamesInput {
-        @doc("Usernames to add. Must contain at least one item.")
+        @doc("Usernames to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.")
         @minItems(1)
         usernames: string[];
-        @doc("Service account client IDs to add.")
+        @doc("Service account client IDs to add. At most 100 unique identifiers are allowed after deduplication.")
         @example(#["abc-123-def"])
         @minItems(1)
         service_accounts?: string[];
@@ -2164,10 +2168,10 @@ namespace Groups {
 
     @doc("Add principals by service account client ID. usernames may also be supplied.")
     model AddServiceAccountsInput {
-        @doc("Usernames to add.")
+        @doc("Usernames to add. At most 100 unique identifiers are allowed after deduplication.")
         @minItems(1)
         usernames?: string[];
-        @doc("Service account client IDs to add. Must contain at least one item.")
+        @doc("Service account client IDs to add. Must contain at least one item. At most 100 unique identifiers are allowed after deduplication.")
         @example(#["abc-123-def"])
         @minItems(1)
         service_accounts: string[];
@@ -2200,9 +2204,9 @@ namespace Groups {
     @summary("Remove principals from a group in bulk")
     @delete op removePrincipals(
         @path uuid: UUID;
-        @doc("Comma-separated usernames to remove from the group")
+        @doc("Comma-separated usernames to remove from the group. At most 100 unique identifiers after deduplication.")
         @query usernames?: string;
-        @doc("Comma-separated service account client IDs to remove from the group")
+        @doc("Comma-separated service account client IDs to remove from the group. At most 100 unique identifiers after deduplication.")
         @query service_accounts?: string;
     ): NoContentResponse | Problems.CommonProblems | Problems.Problem404;
 }
