@@ -796,6 +796,8 @@ objects:
             value: ${V2_READ_ONLY_API_MODE}
           - name: V2_EDIT_API_ENABLED
             value: ${V2_EDIT_API_ENABLED}
+          - name: OCM_V2_ENABLED
+            value: ${OCM_V2_ENABLED}
           - name: KESSEL_TENANT_AUTH_ENABLED
             value: ${KESSEL_TENANT_AUTH_ENABLED}
           - name: V1_ROLE_PERMISSION_BLOCK_LIST
@@ -1770,7 +1772,7 @@ parameters:
   value: cost-management,remediations,inventory,policies,advisor,vulnerability,compliance,automation-analytics,notifications,patch,integrations,ros,staleness,config-manager,idmsvc,subscriptions
 - description: Comma-separated apps excluded from v2 migration; same list filters the v2 roles list API only
   name: V2_MIGRATION_APP_EXCLUDE_LIST
-  value: ansible,automation-analytics,cost-management,hybrid-committed-spend,idmsvc,ocm,ocp-advisor,policies,sources
+  value: ansible,automation-analytics,cost-management,hybrid-committed-spend,idmsvc,ocp-advisor,policies,sources
 - description: Comma-separated list of apps required to use V2 access checks when the strict access checks flag is enabled.
   name: V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES
   value: inventory
@@ -2018,6 +2020,9 @@ parameters:
   value: 'False'
 - name: V2_EDIT_API_ENABLED
   description: Fallback for feature flag to enable v2 edit APIs and block v1 write APIs per org
+  value: 'False'
+- name: OCM_V2_ENABLED
+  description: Fallback for the global rbac.ocm-v2.enabled feature flag for OCM integrations
   value: 'False'
 - name: KESSEL_TENANT_AUTH_ENABLED
   description: Route tenant-level role binding access checks through Kessel instead of org-admin middleware
