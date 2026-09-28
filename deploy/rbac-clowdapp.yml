@@ -288,6 +288,8 @@ objects:
             value: ${KAFKA_PRINCIPAL_CLEANUP_STATIC_MEMBERSHIP_ENABLED}
           - name: KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS
             value: ${KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS}
+          - name: KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE
+            value: ${KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE}
           - name: IT_KAFKA_BOOTSTRAP_SERVERS
             valueFrom:
               secretKeyRef:
@@ -1768,7 +1770,7 @@ parameters:
   value: cost-management,remediations,inventory,policies,advisor,vulnerability,compliance,automation-analytics,notifications,patch,integrations,ros,staleness,config-manager,idmsvc,subscriptions
 - description: Comma-separated apps excluded from v2 migration; same list filters the v2 roles list API only
   name: V2_MIGRATION_APP_EXCLUDE_LIST
-  value: ansible,automation-analytics,cost-management,hybrid-committed-spend,idmsvc,ocm,ocp-advisor,policies,sources
+  value: ansible,automation-analytics,cost-management,hybrid-committed-spend,idmsvc,ocp-advisor,policies,sources
 - description: Comma-separated list of apps required to use V2 access checks when the strict access checks flag is enabled.
   name: V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES
   value: inventory
@@ -2149,6 +2151,9 @@ parameters:
 - name: KAFKA_PRINCIPAL_CLEANUP_DRAIN_TIMEOUT_MS
   description: Wall-clock budget (ms) per Kafka principal-cleanup Celery cycle. Keep below the 60s beat interval with headroom for consumer setup and shutdown.
   value: '50000'
+- name: KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE
+  description: Max Kafka messages per BOP user lookup for principal cleanup. Duplicate user_ids within a batch are deduplicated before the call.
+  value: '100'
 - name: ROOT_SCOPE_PERMISSIONS
   description: Comma-separated list of permissions that bind to root workspace scope (supports wildcards like rbac:*:read)
   value: ''
