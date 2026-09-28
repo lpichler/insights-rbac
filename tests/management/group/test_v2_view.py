@@ -54,7 +54,7 @@ TOKEN_VALIDATION_TARGET = "management.authorization.token_validator.ITSSOTokenVa
 IT_SERVICE_ACCOUNTS_TARGET = "management.principal.it_service.ITService.request_service_accounts"
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class GroupV2ViewTestBase(IdentityRequest):
     """Shared setup for GroupV2ViewSet tests."""
 
@@ -712,7 +712,6 @@ class GroupV2CreateViewTest(GroupV2ViewTestBase):
         self.assertEqual(self.mock_check_access.call_args.kwargs["relation"], "rbac_groups_write")
         self.assertFalse(Group.objects.filter(tenant=self.tenant, name="gamma").exists())
 
-    @override_settings(V2_EDIT_API_ENABLED=False)
     def test_create_requires_workspaces_enabled(self):
         """Writes are blocked when the org is not using workspaces."""
         set_v2_opt_in_state(self.tenant, False)

@@ -60,7 +60,7 @@ def _scope_cache(tenant_perms="", root_perms="", default_perms=""):
     return PermissionScopeCache(scope_service)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2RetrieveViewTest(IdentityRequest):
     """Test the RoleV2ViewSet retrieve endpoint."""
 
@@ -453,7 +453,7 @@ class RoleV2RetrieveViewTest(IdentityRequest):
         self.assertEqual(set(create_permissions), set(retrieve_permissions))
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2ViewSetTests(IdentityRequest):
     """Test the RoleV2ViewSet."""
 
@@ -2241,7 +2241,7 @@ _SENTINEL = RuntimeError("_atomic_action sentinel")
 _ATOMIC_ACTION_PATH = "management.v2_mixins.AtomicOperationsMixin._atomic_action"
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleV2ViewSetAtomicWiringTests(IdentityRequest):
     """Verify RoleV2ViewSet write endpoints delegate to _atomic_action."""
 

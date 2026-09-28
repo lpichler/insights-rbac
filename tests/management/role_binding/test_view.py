@@ -1604,7 +1604,7 @@ class RoleBindingListViewSetTest(IdentityRequest):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleBindingViewSetTest(IdentityRequest):
     """Test the RoleBindingViewSet by-subject endpoint."""
 
@@ -3481,7 +3481,7 @@ class DefaultBindingsAPITests(TestCase):
         self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 3)
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class BatchCreateViewTests(IdentityRequest):
     """Tests for the :batchCreate endpoint on RoleBindingViewSet."""
 
@@ -3886,7 +3886,7 @@ class BatchCreateViewTests(IdentityRequest):
         self._assert_problem_details(response, 404, f"workspace with id '{fake_ws_id}' not found", "detail")
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class UpdateRoleBindingsBySubjectAPITests(IdentityRequest):
     """Tests for PUT /role-bindings/by-subject/ endpoint."""
 
@@ -4444,7 +4444,7 @@ _SENTINEL = RuntimeError("_atomic_action sentinel")
 _ATOMIC_ACTION_PATH = "management.v2_mixins.AtomicOperationsMixin._atomic_action"
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
+@override_settings(V2_APIS_ENABLED=True, ATOMIC_RETRY_DISABLED=True)
 class RoleBindingViewSetAtomicWiringTests(IdentityRequest):
     """Verify RoleBindingViewSet write endpoints delegate to _atomic_action."""
 
@@ -4535,7 +4535,7 @@ class RoleBindingViewSetAtomicWiringTests(IdentityRequest):
         mock_atomic.assert_called_once()
 
 
-@override_settings(V2_APIS_ENABLED=True, V2_EDIT_API_ENABLED=True)
+@override_settings(V2_APIS_ENABLED=True)
 class RoleBindingAuditLogTests(TransactionalIdentityRequest):
     """Tests for role binding audit logging."""
 
