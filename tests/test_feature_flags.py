@@ -21,7 +21,9 @@ import time
 from unittest.mock import MagicMock, patch
 
 from django.conf import settings
-from django.test import SimpleTestCase, TestCase, override_settings
+from django.test import TestCase, override_settings
+
+from tests.identity_request import IdentityRequest
 
 from feature_flags import FEATURE_FLAGS, FeatureFlags, rbac_unleash_fetch_total, rbac_unleash_last_fetch_timestamp
 
@@ -204,7 +206,7 @@ class FeatureFlagsTest(TestCase):
         self.assertLessEqual(ts, after_time)
 
 
-class OCMV2FeatureFlagsTest(SimpleTestCase):
+class OCMV2FeatureFlagsTest(IdentityRequest):
     """Exercise the independent OCM rollout without external services."""
 
     def test_global_unleash_result(self):
@@ -222,7 +224,7 @@ class OCMV2FeatureFlagsTest(SimpleTestCase):
     def test_unavailable_client_fallback_is_independent(self):
         """Workspace activation settings do not control OCM's fallback."""
         flags = FeatureFlags()
-        with patch.object(flags, "initialize"):
+        with patch.object(flags, "initialize") as initialize:
             for enabled in (True, False):
                 with (
                     self.subTest(enabled=enabled),
@@ -231,6 +233,7 @@ class OCMV2FeatureFlagsTest(SimpleTestCase):
                     ),
                 ):
                     self.assertIs(flags.is_ocm_v2_enabled_global(), enabled)
+            self.assertEqual(initialize.call_count, 2)
 
     @override_settings(OCM_V2_ENABLED=False, V2_EDIT_API_ENABLED=True)
     def test_missing_flag_defaults_off(self):
@@ -239,3 +242,5 @@ class OCMV2FeatureFlagsTest(SimpleTestCase):
         flags.client = MagicMock()
         flags.client.is_enabled.side_effect = lambda name, context, fallback_function: fallback_function(name, context)
         self.assertFalse(flags.is_ocm_v2_enabled_global())
+        flags.client.is_enabled.assert_called_once()
+        self.assertEqual(flags.client.is_enabled.call_args.args, ("rbac.ocm-v2.enabled", None))

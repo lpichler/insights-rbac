@@ -42,9 +42,15 @@ class TenantFilter(CommonFilters):
     """Filter for tenant."""
 
     def modified_only_filter(self, queryset, field, modified_only):
-        """Filter to return only modified tenants."""
+        """Filter to return only modified tenants.
+
+        The ``rbac.ocm-v2.enabled`` flag is evaluated without an org context
+        because this endpoint returns tenants across all organizations.
+        Both OCM integration endpoints share this global rollout decision;
+        the ``OCM_V2_ENABLED`` env var serves as the fallback.
+        """
         if modified_only:
-            queryset = queryset.modified_only()
+            queryset = queryset.modified_only(use_v2=FEATURE_FLAGS.is_ocm_v2_enabled_global())
         return queryset
 
     modified_only = filters.BooleanFilter(field_name="modified_only", method="modified_only_filter")
