@@ -195,36 +195,32 @@ Env vars: `READ_YOUR_WRITES_WORKSPACE_ENABLED`, `READ_YOUR_WRITES_CHANNEL`, `REA
 | `KAFKA_PRINCIPAL_CLEANUP_BOP_BATCH_SIZE` | `100` | Max Kafka messages per BOP lookup (user_ids deduped within each batch; each message still applies DB) |
 | `READ_YOUR_WRITES_WORKSPACE_ENABLED` | `False` | Enables workspace create blocking |
 
+The Unleash flag `rbac.ocm-v2.enabled` is evaluated globally, without organization context,
+with `OCM_V2_ENABLED` as its environment fallback. An existing Unleash flag result takes
+precedence over the fallback. It is independent of workspace flags and persistent V2 write
+activation. When disabled, roles-for-group delegates
+to the existing V1 view. When enabled, it reads V2 bindings and preserves the V1 response contract.
+Built-in default groups expose seeded children of platform roles. External role metadata and
+legacy display names use the optional `v1_source` link; V2-native roles use their own name as
+`display_name` and return null external metadata. Role assignment lookup never uses V1 policies.
+
+Use an all-or-nothing Unleash strategy, without per-org constraints or percentage rollout.
+Coordinate the cutover with the OCM team and enable the flag only after both integration changes
+are deployed and bindings are populated for all affected tenants. Verify OCM-relevant V2 names
+match V1 names. The seeder uses V1 display names, so that equality is not guaranteed for every role.
+The roles-for-group V2 response always includes `accessCount`, as required by the integration
+contract; the legacy group query currently omits that field. The principal-specific roles endpoint remains on V1.
+
 ### Modified-tenants and OCM V2
 
-The Unleash flag `rbac.ocm-v2.enabled` controls whether the modified-tenants endpoint
-(`/_private/api/v1/integrations/tenant/?modified_only=true`) detects tenant modification
-through V1 roles (`Role.system=False`) or V2 roles (`RoleV2.type=custom`). Non-system
-group detection is unchanged regardless of flag state. Only `custom` V2 roles count as
-modifications — `platform` and `seeded` roles are excluded.
+The same global flag controls `/_private/api/v1/integrations/tenant/?modified_only=true`.
+When disabled, it detects tenants with non-system V1 roles or non-system groups. When
+enabled, it detects tenants with custom V2 roles or non-system groups. Seeded and platform
+V2 roles do not count as modifications. Both endpoints use `is_ocm_v2_enabled_global()`.
 
-The team has agreed on an **all-or-nothing global rollout**: the flag applies uniformly
-to all organizations without org-specific constraints or percentage-based targeting.
-The Unleash flag result always takes precedence; the `OCM_V2_ENABLED` Django setting
-serves **only as a fallback** when Unleash is unavailable (client not initialized,
-network failure, etc.).
-
-Because the modified-tenants endpoint returns tenants across all organizations, the flag
-is evaluated **without an org context** via `is_ocm_v2_enabled_global()`. This aligns
-with the roles-for-group endpoint (#3421), which also uses `is_ocm_v2_enabled_global()`
-without organization context — both endpoints switch detection consistently.
-
-**Precedence chain**: Unleash default strategy → `OCM_V2_ENABLED` env fallback (default
-`False`).
-
-The `is_ocm_v2_enabled_global()` helper and the `OCM_V2_ENABLED` setting are shared
-between this PR and #3421. Whichever PR merges second should reconcile any duplicate
-definitions of the shared flag helper, setting, and tests.
-
-| Flag state | Role detection | Group detection |
-|------------|---------------|-----------------|
-| Disabled (default) | V1 non-system roles (`Role.system=False`) | Non-system groups (unchanged) |
-| Enabled | V2 custom roles (`RoleV2.type=custom`) | Non-system groups (unchanged) |
+`OCM_V2_ENABLED` defaults to `False` and is used when the Unleash client is unavailable
+or cannot provide a flag result. A cached Unleash result still takes precedence during
+network failures. The ClowdApp parameter exposes this fallback through app-interface.
 
 ## 12. Prometheus Metrics Conventions
 
