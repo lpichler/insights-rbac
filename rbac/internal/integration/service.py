@@ -69,6 +69,7 @@ def annotate_integration_roles(roles, tenant):
         )
     return (
         roles.annotate(
+            integration_name=Coalesce("v1_source__name", F("name")),
             display_name=Coalesce("v1_source__display_name", F("name")),
             policyCount=Value(0),
             system=Case(

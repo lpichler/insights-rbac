@@ -127,7 +127,12 @@ class OCMGroupViewSet(GroupViewSet):
             role_filters["v1_source__ext_relation__ext_tenant__name__iexact"] = (
                 clean_query_param(external_tenant, "role_external_tenant") or external_tenant
             )
+        if "name__icontains" in role_filters:
+            role_filters["integration_name__icontains"] = role_filters.pop("name__icontains")
         roles = roles.filter(**role_filters)
         roles = self.order_queryset(roles, VALID_ROLE_ORDER_FIELDS, request.query_params.get("order_by", "name"))
+        order_by = request.query_params.get("order_by", "name")
+        if order_by in ("name", "-name"):
+            roles = roles.order_by(order_by.replace("name", "integration_name"))
         page = self.paginate_queryset(roles)
         return self.get_paginated_response(IntegrationRoleV2Serializer(page, many=True).data)
