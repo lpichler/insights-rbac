@@ -172,8 +172,8 @@ class PermissionV2ViewSet(BaseV2ViewSet):
         serializer = self.get_serializer(page, many=True)
         return self.get_paginated_response(serializer.data)
 
-    @action(detail=False)
-    def options(self, request):
+    @action(detail=False, url_path="options", url_name="options")
+    def field_options(self, request):
         """List distinct values for a single permission field."""
         field = request.query_params.get("field")
         if field not in OPTIONS_FIELD_MAP:
