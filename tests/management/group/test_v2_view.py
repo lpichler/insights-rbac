@@ -44,6 +44,7 @@ from management.relation_replicator.relation_replicator import ReplicationEventT
 from management.role.model import Role
 from management.role.v2_model import CustomRoleV2
 from management.role_binding.model import RoleBinding, RoleBindingGroup
+from management.tenant_mapping.v2_activation import assert_v1_write_allowed, is_v2_opted_in, set_v2_opt_in_state
 from rbac import urls
 from tests.identity_request import IdentityRequest
 from tests.v2_util import bootstrap_tenant_for_v2_test
@@ -64,6 +65,8 @@ class GroupV2ViewTestBase(IdentityRequest):
         super().setUp()
         bootstrap_tenant_for_v2_test(self.tenant)
         self.client = APIClient()
+
+        set_v2_opt_in_state(self.tenant, True)
 
         self.enterContext(
             patch(
@@ -710,12 +713,11 @@ class GroupV2CreateViewTest(GroupV2ViewTestBase):
         self.assertFalse(Group.objects.filter(tenant=self.tenant, name="gamma").exists())
 
     @override_settings(V2_EDIT_API_ENABLED=False)
-    @patch("feature_flags.FEATURE_FLAGS.is_v2_edit_api_enabled", return_value=False)
-    @patch("management.permissions.v2_edit_api_access.is_v2_write_activated", return_value=False)
-    def test_create_requires_workspaces_enabled(self, _mock_activated, _mock_flag):
+    def test_create_requires_workspaces_enabled(self):
         """Writes are blocked when the org is not using workspaces."""
-        response = self._create({"name": "gamma"})
+        set_v2_opt_in_state(self.tenant, False)
 
+        response = self._create({"name": "gamma"})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     @patch("management.group.v2_view.group_obj_change_notification_handler")

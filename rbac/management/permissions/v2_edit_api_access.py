@@ -26,15 +26,15 @@ from typing import Iterable
 
 from django.conf import settings
 from feature_flags import FEATURE_FLAGS
-from management.tenant_mapping.v2_activation import is_v2_write_activated
+from management.tenant_mapping.v2_activation import is_v2_opted_in
 from rest_framework import permissions
 
 logger = logging.getLogger(__name__)
 
 
 def is_v2_edit_enabled_for_request(request) -> bool:
-    """Check if V2 edit API is enabled via feature flag or local activation state."""
-    return is_v2_write_activated(request.tenant) or FEATURE_FLAGS.is_v2_edit_api_enabled(request.user.org_id)
+    """Check if V2 edit API is enabled for a tenant."""
+    return is_v2_opted_in(request.tenant)
 
 
 def is_v2_access_check_required_for_request(request, requested_apps: Iterable[str]) -> bool:
@@ -46,7 +46,7 @@ def is_v2_access_check_required_for_request(request, requested_apps: Iterable[st
     requested_apps = set(requested_apps)
 
     if not requested_apps.isdisjoint(settings.V2_STRICT_ACCESS_CHECK_FLAG_APPLICATION_NAMES):
-        return is_v2_write_activated(request.tenant) or FEATURE_FLAGS.is_v2_strict_access_check_enabled(
+        return is_v2_edit_enabled_for_request(request) or FEATURE_FLAGS.is_v2_strict_access_check_enabled(
             request.user.org_id
         )
 
