@@ -37,6 +37,7 @@ class TenantSerializer(serializers.ModelSerializer):
 class IntegrationRoleV2Serializer(serializers.ModelSerializer):
     """Represent V2 roles using the existing OCM integration response contract."""
 
+    name = serializers.CharField(source="integration_name", read_only=True)
     display_name = serializers.CharField(read_only=True)
     policyCount = serializers.IntegerField(read_only=True)
     accessCount = serializers.IntegerField(source="permissions.count", read_only=True)

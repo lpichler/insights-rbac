@@ -193,6 +193,41 @@ class OCMV2RolesTests(IdentityRequest):
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.data["data"][0]["name"], v1.name)
 
+    def test_seeded_legacy_names_with_different_display_names(self):
+        """Preserve OCM names through real seeding, filtering and name ordering."""
+        self.group.role_binding_entries.all().delete()
+        names = [
+            ("OCM Cluster Editor", "OCM cluster editor"),
+            ("OCM Cluster Provisioner", "OCM cluster provisioner"),
+            ("OCM Organization Admin", "OCM Organization Administrator"),
+        ]
+        for name, display_name in names:
+            v1 = Role.objects.create(name=name, display_name=display_name, tenant=self.public, system=True)
+            role = _seed_v2_role_from_v1(
+                v1, display_name, "OCM role", self.public, {}, ImplicitResourceService([], [])
+            )
+            self.bind(role)
+            response = self.get_roles(query="?role_name=" + name)
+            self.assertEqual(response.status_code, 200)
+            row = response.data["data"][0]
+            self.assertEqual(row["name"], name)
+            self.assertEqual(row["display_name"], display_name)
+            self.assertEqual(row["uuid"], str(role.uuid))
+            role.refresh_from_db()
+            self.assertEqual(role.name, display_name)
+        native = RoleV2.objects.create(name="OCM Organization Admin A", tenant=self.tenant)
+        self.bind(native)
+        expected = sorted([name for name, _ in names] + [native.name])
+        for order in ("name", "-name"):
+            with self.subTest(order=order):
+                response = self.get_roles(query="?order_by=" + order)
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    [row["name"] for row in response.data["data"]],
+                    expected if order == "name" else list(reversed(expected)),
+                )
+        self.assertEqual(self.get_roles(query="?role_name=Administrator").data["data"], [])
+
     def test_default_groups_expand_platform_children(self):
         """Default groups return seeded role names rather than internal aggregate names."""
         mapping = TenantMapping.objects.create(tenant=self.tenant)

@@ -201,13 +201,15 @@ precedence over the fallback. It is independent of workspace flags and persisten
 activation. When disabled, roles-for-group delegates
 to the existing V1 view. When enabled, it reads V2 bindings and preserves the V1 response contract.
 Built-in default groups expose seeded children of platform roles. External role metadata and
-legacy display names use the optional `v1_source` link; V2-native roles use their own name as
-`display_name` and return null external metadata. Role assignment lookup never uses V1 policies.
+legacy names and display names use the optional `v1_source` link; V2-native roles use their own
+name for both fields. Name filtering and ordering use the same integration name. These mappings
+leave stored V2 names unchanged. V2-native roles return null external metadata. Role assignment
+lookup never uses V1 policies.
 
 Use an all-or-nothing Unleash strategy, without per-org constraints or percentage rollout.
 Coordinate the cutover with the OCM team and enable the flag only after both integration changes
-are deployed and bindings are populated for all affected tenants. Verify OCM-relevant V2 names
-match V1 names. The seeder uses V1 display names, so that equality is not guaranteed for every role.
+are deployed and bindings are populated for all affected tenants. Verify OCM seeded roles retain
+their `v1_source` links so integration names match V1 names.
 The roles-for-group V2 response always includes `accessCount`, as required by the integration
 contract; the legacy group query currently omits that field. The principal-specific roles endpoint remains on V1.
 
