@@ -205,7 +205,6 @@ custom = fixture.new_custom_role("my-custom", resource_access=[(["app:res:write"
 
 **Settings overrides** (use `@override_settings` on class or method):
 - `V2_APIS_ENABLED=True` -- enable v2 URL routes
-- `V2_EDIT_API_ENABLED=True` -- enable v2 write endpoints
 - `ATOMIC_RETRY_DISABLED=True` -- disable `pgtransaction.atomic` retries (avoids nested transaction errors in `TestCase`)
 - `WORKSPACE_HIERARCHY_DEPTH_LIMIT=N` -- control depth limit for workspace tests
 - `REPLICATION_TO_RELATION_ENABLED=True` -- enable relation replication (already set by base classes)

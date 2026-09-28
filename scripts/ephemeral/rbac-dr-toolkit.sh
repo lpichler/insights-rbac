@@ -1609,6 +1609,7 @@ dr_kessel_setup() {
       "SELECT id, org_id, tenant_name, ready FROM api_tenant WHERE tenant_name <> 'public';" 2>/dev/null || true
     return 1
   fi
+  _db_query "UPDATE management_tenantmapping SET v2_opted_in_at = NOW() WHERE tenant_id = ${_act_tenant_id} AND v2_opted_in_at IS NULL;" 2>/dev/null || true
   _db_query "UPDATE management_tenantmapping SET v2_write_activated_at = NOW() WHERE tenant_id = ${_act_tenant_id} AND v2_write_activated_at IS NULL;" 2>/dev/null || true
   local _act_check
   _act_check=$(PGPASSWORD="${_db_password}" oc exec "${_db_pod}" -- \

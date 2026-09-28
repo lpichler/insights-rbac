@@ -14,7 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
-"""Permission classes for gating V1/V2 write operations by the v2_edit_api feature flag.
+"""Permission classes for gating V1/V2 write operations by tenant opt-in state.
 
 These permission classes serve as a fast, non-locking first line of defense.
 The authoritative check with row-level locking happens inside the transaction
@@ -54,10 +54,7 @@ def is_v2_access_check_required_for_request(request, requested_apps: Iterable[st
 
 
 class V1WriteBlockedWhenWorkspacesEnabled(permissions.BasePermission):
-    """Deny V1 write operations when workspaces (v2 edit API) is enabled for the org.
-
-    Checks both the feature flag and the database activation state. If either
-    indicates V2 is active, V1 writes are blocked.
+    """Deny V1 write operations when the org is opted into V2.
 
     Add to V1 viewsets (RoleViewSet, GroupViewSet) to block write requests
     for orgs that have been migrated to workspaces.
@@ -121,12 +118,7 @@ class V1ApiBlockedWhenWorkspacesEnabled(permissions.BasePermission):
 
 
 class V2WriteRequiresWorkspacesEnabled(permissions.BasePermission):
-    """Deny V2 write operations when workspaces (v2 edit API) is NOT enabled for the org.
-
-    Checks both the feature flag and the DB activation state. A tenant that has already
-    written via V2 must remain able to do so even if the feature flag is later disabled;
-    otherwise they would be locked out of both V1 (permanently blocked by assert_v1_write_allowed)
-    and V2 (blocked here).
+    """Deny V2 write operations when the org is not opted into V2.
 
     Add to V2 viewsets (RoleV2ViewSet, RoleBindingViewSet) to block write requests
     for orgs that have not been migrated to workspaces.

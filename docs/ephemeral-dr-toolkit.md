@@ -27,7 +27,6 @@ Deploys RBAC, Kessel Relations, and Host Inventory with DR-specific parameters:
 - `DR_RELATIONS_RECONCILE_ENABLED=True` — enables Kessel Relations reconciliation endpoint
 - `DR_WORKSPACE_RECONCILE_ENABLED=True` — enables workspace recovery endpoint
 - `KAFKA_ENABLED=True` — required for event-based reconciliation
-- `V2_EDIT_API_ENABLED=True` — enables v2 workspace/role/role-binding APIs
 
 Default reservation duration is 8 hours. Override with `DURATION=4h ./scripts/ephemeral/deploy-ephemeral.sh`.
 
