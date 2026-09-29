@@ -1,0 +1,126 @@
+"""Tests for the wait_for_schema management command."""
+
+from unittest.mock import MagicMock, patch
+
+from django.core.management import CommandError, call_command
+from django.test import TestCase
+
+
+class TestWaitForSchema(TestCase):
+    """Tests for the wait_for_schema management command."""
+
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_schema_ready_immediately(self, mock_connections, mock_executor_cls):
+        """When all migrations are applied, command returns immediately."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0001_initial")]
+        mock_executor.migration_plan.return_value = []
+        mock_executor_cls.return_value = mock_executor
+
+        call_command("wait_for_schema", timeout=10, poll_interval=1)
+
+        mock_conn.prepare_database.assert_called_once()
+        mock_executor.migration_plan.assert_called_once_with([("app", "0001_initial")])
+
+    @patch("management.management.commands.wait_for_schema.time")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_schema_pending_then_ready(self, mock_connections, mock_executor_cls, mock_time):
+        """When migrations are pending, command polls until ready."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_time.sleep = MagicMock()
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0002_add_field")]
+
+        # First call: 2 pending migrations; second call: ready
+        mock_executor.migration_plan.side_effect = [
+            [("app", "0001"), ("app", "0002")],
+            [],
+        ]
+        mock_executor_cls.return_value = mock_executor
+
+        call_command("wait_for_schema", timeout=30, poll_interval=5)
+
+        self.assertEqual(mock_executor.migration_plan.call_count, 2)
+        mock_time.sleep.assert_called_once_with(5)
+
+    @patch("management.management.commands.wait_for_schema.time")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_schema_timeout(self, mock_connections, mock_executor_cls, mock_time):
+        """When schema never becomes ready, command raises CommandError after timeout."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_time.sleep = MagicMock()
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0003")]
+        mock_executor.migration_plan.return_value = [("app", "0003")]
+        mock_executor_cls.return_value = mock_executor
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema", timeout=10, poll_interval=5)
+
+        self.assertIn("Schema not ready after 10s", str(ctx.exception))
+        self.assertEqual(mock_time.sleep.call_count, 2)
+
+    @patch("management.management.commands.wait_for_schema.time")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_db_error_then_recovery(self, mock_connections, mock_executor_cls, mock_time):
+        """When DB connection fails temporarily, command retries and succeeds."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_time.sleep = MagicMock()
+
+        # First call: prepare_database raises; second call: succeeds
+        mock_conn.prepare_database.side_effect = [Exception("connection refused"), None, None]
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0001")]
+        mock_executor.migration_plan.return_value = []
+        mock_executor_cls.return_value = mock_executor
+
+        call_command("wait_for_schema", timeout=30, poll_interval=5)
+
+        mock_time.sleep.assert_called_once_with(5)
+
+    @patch("management.management.commands.wait_for_schema.os")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_timeout_from_env(self, mock_connections, mock_executor_cls, mock_os):
+        """Timeout defaults to SCHEMA_READINESS_TIMEOUT env var."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_os.environ.get.return_value = "600"
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0001")]
+        mock_executor.migration_plan.return_value = []
+        mock_executor_cls.return_value = mock_executor
+
+        call_command("wait_for_schema")
+
+        mock_os.environ.get.assert_called_with("SCHEMA_READINESS_TIMEOUT", "300")
+
+    @patch("management.management.commands.wait_for_schema.time")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_executor_error_then_timeout(self, mock_connections, mock_executor_cls, mock_time):
+        """When MigrationExecutor consistently fails, command times out."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_time.sleep = MagicMock()
+
+        mock_executor_cls.side_effect = Exception("django_migrations table does not exist")
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema", timeout=10, poll_interval=5)
+
+        self.assertIn("Schema not ready after 10s", str(ctx.exception))

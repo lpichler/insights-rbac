@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 export ACCESS_CACHE_CONNECT_SIGNALS=False
 
@@ -36,5 +37,7 @@ then
     echo "Running seeds <-------"
     python /opt/rbac/rbac/manage.py seeds
 else
-    echo "Migrations should not be run <----"
+    echo "Migrations disabled — waiting for schema readiness <----"
+    python /opt/rbac/rbac/manage.py wait_for_db
+    python /opt/rbac/rbac/manage.py wait_for_schema
 fi
