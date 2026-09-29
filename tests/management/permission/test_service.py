@@ -16,6 +16,9 @@
 #
 """Tests for PermissionService."""
 
+from unittest.mock import patch
+
+from api.models import Tenant
 from django.test import override_settings
 from management.permission.exceptions import InvalidPermissionDataError
 from management.permission.model import Permission
@@ -125,3 +128,43 @@ class PermissionServiceTests(IdentityRequest):
 
         self.assertEqual(len(result), 2)
         self.assertCountEqual(result, [self.permission1, self.permission2])
+
+    def test_get_visible_permissions_returns_all_tenants(self):
+        """Test that get_visible_permissions includes permissions from all tenants."""
+        other_tenant = Tenant.objects.create(tenant_name="other_org", org_id="99999", ready=True)
+        other_perm = Permission.objects.create(permission="other:resource:read", tenant=other_tenant)
+
+        result = list(self.service.get_visible_permissions())
+
+        perm_strings = [p.permission for p in result]
+        self.assertIn("other:resource:read", perm_strings)
+        self.assertIn("inventory:hosts:read", perm_strings)
+
+        other_perm.delete()
+        other_tenant.delete()
+
+    def test_get_visible_permissions_excludes_v2_role_scoped_apps(self):
+        """Test that get_visible_permissions excludes applications scoped for v2 role management."""
+        excluded_perm = Permission.objects.create(permission="excluded_app:res:read", tenant=self.tenant)
+
+        with patch(
+            "management.permission.service.v2_role_excluded_applications",
+            return_value={"excluded_app"},
+        ):
+            result = list(self.service.get_visible_permissions())
+
+        perm_strings = [p.permission for p in result]
+        self.assertNotIn("excluded_app:res:read", perm_strings)
+        self.assertIn("inventory:hosts:read", perm_strings)
+
+        excluded_perm.delete()
+
+    def test_get_visible_permissions_ordered_by_c_locale(self):
+        """Test that permissions are ordered deterministically by C-locale collation."""
+        Permission.objects.create(permission="zzz:last:read", tenant=self.tenant)
+        Permission.objects.create(permission="aaa:first:read", tenant=self.tenant)
+
+        result = list(self.service.get_visible_permissions())
+        perm_strings = [p.permission for p in result]
+
+        self.assertEqual(perm_strings, sorted(perm_strings))
