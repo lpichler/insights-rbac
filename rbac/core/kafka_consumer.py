@@ -1407,11 +1407,12 @@ class RBACKafkaConsumer:
                 replication_delete_response.consistency_token, "token", None
             )
 
+            normalized_org_id = org_id.strip() if isinstance(org_id, str) else org_id
             is_global_system_role_event = event_type in {
                 "create_system_role",
                 "update_system_role",
                 "delete_system_role",
-            } and org_id in (None, "", "None")
+            } and normalized_org_id in (None, "", "None")
 
             if token and org_id and not is_global_system_role_event:
                 _save_consistency_token_best_effort(org_id, token, debezium_msg.aggregateid)
