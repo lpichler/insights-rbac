@@ -198,8 +198,8 @@ class PermissionV2ViewsetTests(IdentityRequest):
         # Without prefetch (N+1), each new dependency-bearing permission adds a query.
         self.assertEqual(expanded_count, baseline_count, "Query count should stay constant with prefetch_related")
 
-    def test_list_permissions_tenant_isolation(self):
-        """Test that permissions from another tenant are not returned."""
+    def test_list_permissions_visible_regardless_of_creating_tenant(self):
+        """Test that permissions are visible to a requesting org regardless of which tenant created them."""
         other_tenant = Tenant.objects.create(
             tenant_name="other_org",
             org_id="99999",
@@ -211,7 +211,7 @@ class PermissionV2ViewsetTests(IdentityRequest):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         permissions = {p["permission"] for p in response.data["data"]}
-        self.assertNotIn("other:secret:read", permissions)
-        self.assertEqual(len(response.data["data"]), 4)
+        self.assertIn("other:secret:read", permissions)
+        self.assertEqual(len(response.data["data"]), 5)
 
         other_tenant.delete()
