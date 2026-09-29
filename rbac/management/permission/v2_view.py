@@ -107,13 +107,13 @@ class PermissionV2ViewSet(BaseV2ViewSet):
     http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
-        """Scope permissions to the requesting tenant and exclude v2-role-scoped applications.
+        """Return all permissions and exclude v2-role-scoped applications.
 
         Overrides ``BaseV2ViewSet.get_queryset()`` because ``Permission``
         lacks the ``name`` and ``modified`` fields used in the base ordering.
         """
         queryset = (
-            Permission.objects.filter(tenant=self.request.tenant)
+            Permission.objects.all()
             .annotate(permission_collate=Collate("permission", "C"))
             .order_by("permission_collate")
         )
