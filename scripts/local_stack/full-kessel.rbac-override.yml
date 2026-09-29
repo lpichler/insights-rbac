@@ -125,9 +125,6 @@ services:
       GROUP_SEEDING_ENABLED: "False"
       READ_YOUR_WRITES_WORKSPACE_ENABLED: "True"
       READ_YOUR_WRITES_TIMEOUT_SECONDS: "30"
-    depends_on:
-      rbac-migrate:
-        condition: service_completed_successfully
     # `celery status` starts a broker RPC for every probe and is unreliable
     # while the constrained local stack is starting. The process check still
     # lets rbac-server wait for the worker container to be running.
@@ -145,9 +142,6 @@ services:
       PERMISSION_SEEDING_ENABLED: "False"
       ROLE_SEEDING_ENABLED: "False"
       GROUP_SEEDING_ENABLED: "False"
-    depends_on:
-      rbac-migrate:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
