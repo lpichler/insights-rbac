@@ -55,8 +55,12 @@ class Command(BaseCommand):
 
         self.stdout.write("Waiting for schema readiness (timeout=%ds, poll=%ds)..." % (timeout, poll_interval))
 
-        elapsed = 0
-        while elapsed < timeout:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
             try:
                 connection = connections["default"]
                 connection.prepare_database()
@@ -73,8 +77,9 @@ class Command(BaseCommand):
             except Exception as exc:
                 self.stdout.write("Schema check error: %s. Retrying in %ds..." % (exc, poll_interval))
 
-            time.sleep(poll_interval)
-            elapsed += poll_interval
+            sleep_time = min(poll_interval, deadline - time.monotonic())
+            if sleep_time > 0:
+                time.sleep(sleep_time)
 
         raise CommandError(
             "Schema not ready after %ds. "

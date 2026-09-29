@@ -35,6 +35,9 @@ class TestWaitForSchema(TestCase):
         mock_connections.__getitem__.return_value = mock_conn
         mock_time.sleep = MagicMock()
 
+        # monotonic() calls: init(0), remaining-check(0), sleep-calc(0), remaining-check(6)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0, 0, 6])
+
         mock_executor = MagicMock()
         mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0002_add_field")]
 
@@ -59,6 +62,10 @@ class TestWaitForSchema(TestCase):
         mock_connections.__getitem__.return_value = mock_conn
         mock_time.sleep = MagicMock()
 
+        # monotonic() calls: init(0), remaining(0), sleep-calc(0),
+        #   remaining(6), sleep-calc(6), remaining(12 -> expired)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0, 0, 6, 6, 12])
+
         mock_executor = MagicMock()
         mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0003")]
         mock_executor.migration_plan.return_value = [("app", "0003")]
@@ -79,6 +86,9 @@ class TestWaitForSchema(TestCase):
         mock_connections.__getitem__.return_value = mock_conn
         mock_time.sleep = MagicMock()
 
+        # monotonic() calls: init(0), remaining(0), sleep-calc(0), remaining(6)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0, 0, 6])
+
         # First call: prepare_database raises; second call: succeeds
         mock_conn.prepare_database.side_effect = [Exception("connection refused"), None, None]
 
@@ -92,13 +102,17 @@ class TestWaitForSchema(TestCase):
         mock_time.sleep.assert_called_once_with(5)
 
     @patch("management.management.commands.wait_for_schema.os")
+    @patch("management.management.commands.wait_for_schema.time")
     @patch("management.management.commands.wait_for_schema.MigrationExecutor")
     @patch("management.management.commands.wait_for_schema.connections")
-    def test_timeout_from_env(self, mock_connections, mock_executor_cls, mock_os):
+    def test_timeout_from_env(self, mock_connections, mock_executor_cls, mock_time, mock_os):
         """Timeout defaults to SCHEMA_READINESS_TIMEOUT env var."""
         mock_conn = MagicMock()
         mock_connections.__getitem__.return_value = mock_conn
         mock_os.environ.get.return_value = "600"
+
+        # monotonic() calls: init(0), remaining(0)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0])
 
         mock_executor = MagicMock()
         mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0001")]
@@ -118,9 +132,39 @@ class TestWaitForSchema(TestCase):
         mock_connections.__getitem__.return_value = mock_conn
         mock_time.sleep = MagicMock()
 
+        # monotonic() calls: init(0), remaining(0), sleep-calc(0),
+        #   remaining(6), sleep-calc(6), remaining(12 -> expired)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0, 0, 6, 6, 12])
+
         mock_executor_cls.side_effect = Exception("django_migrations table does not exist")
 
         with self.assertRaises(CommandError) as ctx:
             call_command("wait_for_schema", timeout=10, poll_interval=5)
 
         self.assertIn("Schema not ready after 10s", str(ctx.exception))
+
+    @patch("management.management.commands.wait_for_schema.time")
+    @patch("management.management.commands.wait_for_schema.MigrationExecutor")
+    @patch("management.management.commands.wait_for_schema.connections")
+    def test_sleep_capped_to_remaining_time(self, mock_connections, mock_executor_cls, mock_time):
+        """When remaining time is less than poll_interval, sleep is capped."""
+        mock_conn = MagicMock()
+        mock_connections.__getitem__.return_value = mock_conn
+        mock_time.sleep = MagicMock()
+
+        # monotonic() calls: init(0), remaining(0), sleep-calc(0),
+        #   remaining(7), sleep-calc(7), remaining(12 -> expired)
+        mock_time.monotonic = MagicMock(side_effect=[0, 0, 0, 7, 7, 12])
+
+        mock_executor = MagicMock()
+        mock_executor.loader.graph.leaf_nodes.return_value = [("app", "0003")]
+        mock_executor.migration_plan.return_value = [("app", "0003")]
+        mock_executor_cls.return_value = mock_executor
+
+        with self.assertRaises(CommandError):
+            call_command("wait_for_schema", timeout=10, poll_interval=5)
+
+        # Second sleep should be capped to remaining time (3s, not 5s)
+        self.assertEqual(mock_time.sleep.call_count, 2)
+        mock_time.sleep.assert_any_call(5)
+        mock_time.sleep.assert_any_call(3)
