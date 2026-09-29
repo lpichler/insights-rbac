@@ -38,6 +38,7 @@ from kafka.consumer.subscription_state import ConsumerRebalanceListener
 from kafka.errors import KafkaError
 from kafka.structs import OffsetAndMetadata
 from kessel.relations.v1beta1 import common_pb2
+from management.relation_replicator.relation_replicator import GLOBAL_REPLICATION_EVENT_TYPES
 from management.relation_replicator.relations_api_replicator import (
     RelationsApiReplicator,
 )
@@ -150,7 +151,7 @@ replication_event_latency = Histogram(
 consistency_token_save_total = Counter(
     "rbac_kafka_consumer_consistency_token_save_total",
     "Consistency token save attempts and outcomes",
-    ["status"],  # success, lock_timeout, error
+    ["status"],  # success, skipped_global, tenant_not_found, lock_timeout, error
 )
 
 last_message_processed_time = Gauge(
@@ -750,6 +751,7 @@ _CONSISTENCY_TOKEN_LOCK_TIMEOUT_MS = 2_000
 
 class _TokenSaveStatus(enum.Enum):
     SUCCESS = "success"
+    TENANT_NOT_FOUND = "tenant_not_found"
     LOCK_TIMEOUT = "lock_timeout"
     ERROR = "error"
 
@@ -770,6 +772,7 @@ def _save_consistency_token_best_effort(org_id: str, token: str, aggregateid: st
                 cursor.execute("SET LOCAL lock_timeout = %s", [f"{_CONSISTENCY_TOKEN_LOCK_TIMEOUT_MS}ms"])
             rows = Tenant.objects.filter(org_id=org_id).update(relations_consistency_token=token)
         if rows == 0:
+            token_save_status = _TokenSaveStatus.TENANT_NOT_FOUND
             logger.warning("Tenant not found for org_id: %s. Unable to save consistency token.", org_id)
     except OperationalError as e:
         error_str = str(e).lower()
@@ -1407,8 +1410,26 @@ class RBACKafkaConsumer:
                 replication_delete_response.consistency_token, "token", None
             )
 
-            if token and org_id:
+            has_tenant_org_id = org_id not in (None, "", "None")
+            is_global_event_without_tenant = event_type in GLOBAL_REPLICATION_EVENT_TYPES and not has_tenant_org_id
+
+            if token and has_tenant_org_id:
                 _save_consistency_token_best_effort(org_id, token, debezium_msg.aggregateid)
+            elif token and is_global_event_without_tenant:
+                consistency_token_save_total.labels(status="skipped_global").inc()
+                logger.info(
+                    "Skipping tenant consistency token save for global system-role event "
+                    "(event_type=%s, aggregateid=%s)",
+                    event_type,
+                    debezium_msg.aggregateid,
+                )
+            elif token:
+                logger.warning(
+                    "Consistency token could not be associated with a tenant: missing org_id "
+                    "(event_type=%s, aggregateid=%s)",
+                    event_type,
+                    debezium_msg.aggregateid,
+                )
             else:
                 logger.warning(
                     f"No consistency token in either write or delete response - "

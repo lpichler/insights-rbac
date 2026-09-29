@@ -368,11 +368,33 @@ class OutboxReplicatorTest(TestCase):
             partition_key=PartitionKey.byEnvironment(),
         )
 
-        # Call resource_context directly to verify it returns context with empty org_id
-        context = event.resource_context()
+        # Tenant-scoped events without org_id remain suspicious and should warn.
+        with self.assertLogs("management.relation_replicator.relation_replicator", level="WARNING") as logs:
+            context = event.resource_context()
+
         self.assertIsNotNone(context)
         self.assertEqual(context["org_id"], "")
         self.assertEqual(context["event_type"], ReplicationEventType.CREATE_GROUP.value)
+        self.assertIn("Missing required org_id", logs.output[0])
+
+    def test_resource_context_for_global_system_role_without_org_id(self):
+        """Global system-role events may omit org_id without logging a missing-tenant warning."""
+        relation = create_relationship(("rbac", "role"), "r1", ("rbac", "principal"), "*", "member")
+
+        event = ReplicationEvent(
+            add=[relation],
+            remove=[],
+            event_type=ReplicationEventType.CREATE_SYSTEM_ROLE,
+            info={"org_id": None},
+            partition_key=PartitionKey.byEnvironment(),
+        )
+
+        with self.assertNoLogs("management.relation_replicator.relation_replicator", level="WARNING"):
+            context = event.resource_context()
+
+        self.assertIsNotNone(context)
+        self.assertIsNone(context["org_id"])
+        self.assertEqual(context["event_type"], ReplicationEventType.CREATE_SYSTEM_ROLE.value)
 
     def test_resource_context_for_migrate_binding_scope_with_notify_token(self):
         """Test resource context includes notify_token for migrate_binding_scope events."""

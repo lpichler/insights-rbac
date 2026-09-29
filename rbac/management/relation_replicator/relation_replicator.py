@@ -114,6 +114,15 @@ class ReplicationEventType(str, Enum):
     DR_CORRECTIVE_REMOVE = "dr_corrective_remove"
 
 
+GLOBAL_REPLICATION_EVENT_TYPES = frozenset(
+    {
+        ReplicationEventType.CREATE_SYSTEM_ROLE,
+        ReplicationEventType.UPDATE_SYSTEM_ROLE,
+        ReplicationEventType.DELETE_SYSTEM_ROLE,
+    }
+)
+
+
 class ReplicationEvent:
     """What tuples changes to replicate."""
 
@@ -148,9 +157,11 @@ class ReplicationEvent:
             if coordination.require_notify_token:
                 return None
 
-        # Validate org_id exists for all events
-        org_id = str(self.event_info.get("org_id", ""))
-        if not org_id:
+        # System-role events are global and originate from the public tenant, which has no org_id.
+        default_org_id = None if self.event_type in GLOBAL_REPLICATION_EVENT_TYPES else ""
+        raw_org_id = self.event_info.get("org_id", default_org_id)
+        org_id = str(raw_org_id) if raw_org_id is not None else None
+        if not org_id and self.event_type not in GLOBAL_REPLICATION_EVENT_TYPES:
             logger.warning(
                 f"Missing required org_id for {self.event_type.value} event. " f"event_info: {self.event_info}"
             )
@@ -182,13 +193,13 @@ class ReplicationEventResourceContext:
 
     resource_type: str | None
     resource_id: str | None
-    org_id: str
+    org_id: str | None
     event_type: str
     created_at: int  # Unix timestamp when event was created (whole seconds)
 
     def __init__(
         self,
-        org_id: str,
+        org_id: str | None,
         event_type: str,
         resource_type: str | None = None,
         resource_id: str | None = None,

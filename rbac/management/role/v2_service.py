@@ -47,6 +47,7 @@ from management.relation_replicator.relation_replicator import (
     ReplicationEvent,
     ReplicationEventType,
 )
+from management.relation_replicator.types import RelationTuple
 from management.role.v2_exceptions import (
     CustomRoleRequiredError,
     InvalidRolePermissionsError,
@@ -390,7 +391,6 @@ class RoleV2Service:
             error_info = ", ".join(f"{str(r.uuid)} ({r.name!r})" for r in non_custom_roles)
             raise CustomRoleRequiredError(f"Only custom roles can be deleted, but got the following: {error_info}")
 
-        relations_to_remove = []
         binding_pks_to_remove = []
 
         # We must still explicitly lock the roles to prevent conflicts with old dual-write code that does not
@@ -402,26 +402,39 @@ class RoleV2Service:
             .select_for_update(of=["self"])
         )
 
+        role_org_ids: dict[int, str] = {}
+        role_uuids_by_org: dict[str, list[str]] = {}
+        relations_to_remove_by_org: dict[str, list[RelationTuple]] = {}
+
+        for role in roles_to_remove:
+            org_id = str(role.tenant.org_id)
+            role_org_ids[role.pk] = org_id
+            role_uuids_by_org.setdefault(org_id, []).append(str(role.uuid))
+            relations_to_remove_by_org.setdefault(org_id, [])
+
         for role_binding in (
             RoleBinding.objects.filter(role__in=roles)
             .prefetch_related("role", "group_entries", "principal_entries")
             .iterator(chunk_size=1000)
         ):
-            relations_to_remove.extend(role_binding.all_tuples())
+            org_id = role_org_ids[role_binding.role_id]
+            relations_to_remove_by_org[org_id].extend(role_binding.all_tuples())
             binding_pks_to_remove.append(role_binding.pk)
 
         for role in roles_to_remove:
-            relations_to_remove.extend(RoleV2.tuples_for_delete(role=role))
+            org_id = role_org_ids[role.pk]
+            relations_to_remove_by_org[org_id].extend(RoleV2.tuples_for_delete(role=role))
 
-        self._replicator.replicate(
-            ReplicationEvent(
-                event_type=ReplicationEventType.DELETE_CUSTOM_ROLE,
-                info={"role_uuids": [str(r.uuid) for r in roles_to_remove]},
-                partition_key=PartitionKey.byEnvironment(),
-                add=[],
-                remove=relations_to_remove,
+        for org_id, role_uuids in role_uuids_by_org.items():
+            self._replicator.replicate(
+                ReplicationEvent(
+                    event_type=ReplicationEventType.DELETE_CUSTOM_ROLE,
+                    info={"role_uuids": role_uuids, "org_id": org_id},
+                    partition_key=PartitionKey.byEnvironment(),
+                    add=[],
+                    remove=relations_to_remove_by_org[org_id],
+                )
             )
-        )
 
         RoleBinding.objects.filter(pk__in=binding_pks_to_remove).delete()
         CustomRoleV2.objects.filter(pk__in=(r.pk for r in roles_to_remove)).delete()

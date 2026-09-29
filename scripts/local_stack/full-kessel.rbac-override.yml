@@ -105,6 +105,9 @@ services:
         condition: service_healthy
 
   rbac-worker:
+    depends_on:
+      rbac-migrate:
+        condition: service_completed_successfully
     environment:
       DJANGO_DEBUG: "True"
       READ_YOUR_WRITES_WORKSPACE_ENABLED: "True"
@@ -121,6 +124,9 @@ services:
   # The upstream check probes Celery workers, but beat is not a worker.
   # Keep the scheduler dependency meaningful by checking that its PID is alive.
   rbac-scheduler:
+    depends_on:
+      rbac-migrate:
+        condition: service_completed_successfully
     environment:
       DJANGO_DEBUG: "True"
     healthcheck:

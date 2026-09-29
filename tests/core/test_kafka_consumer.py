@@ -711,6 +711,45 @@ class RBACKafkaConsumerTests(TestCase):
         self.assertEqual(delete_fencing_check.lock_id, "test-group/0")
         self.assertEqual(delete_fencing_check.lock_token, "test-lock-token")
 
+    @patch("core.kafka_consumer.json_format.ParseDict")
+    @patch("core.kafka_consumer.relations_api_replication.write_relationships")
+    @patch("core.kafka_consumer.relations_api_replication.delete_relationships")
+    @patch("core.kafka_consumer._save_consistency_token_best_effort")
+    def test_global_system_role_without_org_id_skips_tenant_token_save(
+        self, mock_save_token, mock_delete, mock_write, mock_parse_dict
+    ):
+        """A system-role event from the public tenant has no tenant token row to update."""
+        mock_parse_dict.return_value = Mock()
+        mock_write.return_value = Mock(consistency_token=Mock(token="system-role-token"))
+        mock_delete.return_value = Mock(consistency_token=Mock(token=None))
+
+        consumer = RBACKafkaConsumer()
+        consumer.lock_id = "test-group/0"
+        consumer.lock_token = "test-lock-token"
+
+        debezium_msg = DebeziumMessage(
+            aggregatetype="relations",
+            aggregateid="system-role-event",
+            event_type="create_system_role",
+            payload={
+                "relations_to_add": [
+                    {
+                        "resource": {"type": "rbac", "id": "role1"},
+                        "subject": {"type": "rbac", "id": "*"},
+                        "relation": "member",
+                    }
+                ],
+                "relations_to_remove": [],
+                "resource_context": {
+                    "org_id": None,
+                    "event_type": "create_system_role",
+                },
+            },
+        )
+
+        self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 44))
+        mock_save_token.assert_not_called()
+
     @patch("internal.migration_coordination.migration_notify_coordination")
     @patch("core.kafka_consumer.connection.cursor")
     @patch("core.kafka_consumer.json_format.ParseDict")

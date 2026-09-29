@@ -431,8 +431,12 @@ start_rbac_worktree() {
   cp "${SCRIPT_DIR}/../common/container_runtime.sh" "${pr_worktree}/scripts/common/container_runtime.sh"
   cp "${SCRIPT_DIR}/../common/logging.sh" "${pr_worktree}/scripts/common/logging.sh"
   cp "${SCRIPT_DIR}/up-full.sh" "${pr_worktree}/scripts/local_stack/up-full.sh"
-  cp "${SCRIPT_DIR}/full-kessel.rbac-override.yml" \
-    "${pr_worktree}/scripts/local_stack/full-kessel.rbac-override.yml"
+  # Keep a PR-provided service override; use the local default only for older
+  # PR branches that do not include this full-stack configuration.
+  if [[ ! -f "${pr_worktree}/scripts/local_stack/full-kessel.rbac-override.yml" ]]; then
+    cp "${SCRIPT_DIR}/full-kessel.rbac-override.yml" \
+      "${pr_worktree}/scripts/local_stack/full-kessel.rbac-override.yml"
+  fi
   cp "${SCRIPT_DIR}/prepare-full-kessel-configs.sh" \
     "${pr_worktree}/scripts/local_stack/prepare-full-kessel-configs.sh"
   cp "${SCRIPT_DIR}/start-kessel-compose.sh" "${pr_worktree}/scripts/local_stack/start-kessel-compose.sh"
