@@ -25,7 +25,6 @@ from management.models import Permission
 from management.permission.service import PermissionService
 from management.permission.v2_serializer import PermissionV2ResponseSerializer, validate_fields_parameter
 from management.permissions.permission_access import PermissionAccessPermission
-from management.role.v2_role_scope import v2_role_excluded_applications
 from management.utils import validate_and_get_key, validate_uuid
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -107,22 +106,12 @@ class PermissionV2ViewSet(BaseV2ViewSet):
     http_method_names = ["get", "head", "options"]
 
     def get_queryset(self):
-        """Scope permissions to the requesting tenant and exclude v2-role-scoped applications.
+        """Return all visible permissions via the service layer.
 
         Overrides ``BaseV2ViewSet.get_queryset()`` because ``Permission``
         lacks the ``name`` and ``modified`` fields used in the base ordering.
         """
-        queryset = (
-            Permission.objects.filter(tenant=self.request.tenant)
-            .annotate(permission_collate=Collate("permission", "C"))
-            .order_by("permission_collate")
-        )
-
-        excluded_apps = v2_role_excluded_applications()
-        if excluded_apps:
-            queryset = queryset.exclude(application__in=list(excluded_apps))
-
-        return queryset
+        return PermissionService().get_visible_permissions()
 
     def _get_ordering(self, request):
         """Resolve and validate the `order_by` query parameter into ORM field names."""
