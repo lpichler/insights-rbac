@@ -708,7 +708,7 @@ TOKEN_GRANT_TYPE = ENVIRONMENT.get_value("TOKEN_GRANT_TYPE", default="client_cre
 RELATION_API_SERVER = ENVIRONMENT.get_value("RELATION_API_SERVER", default="localhost:9000")
 KESSEL_RELATION_CLOWDER_APPLICATION_NAME = "kessel-relations"
 
-if CLOWDER_ENABLED and "RELATION_API_SERVER" not in os.environ:
+if CLOWDER_ENABLED and ENVIRONMENT.get_value("RELATION_API_SERVER", default=None) is None:
     try:
         hostname = DependencyEndpoints[KESSEL_RELATION_CLOWDER_APPLICATION_NAME]["api"].hostname
         RELATION_API_SERVER = f"{hostname}:9000"
@@ -736,7 +736,7 @@ INVENTORY_API_LOCAL = ENVIRONMENT.bool("INVENTORY_API_LOCAL", default=True)
 INVENTORY_API_SERVER = ENVIRONMENT.get_value("INVENTORY_API_SERVER", default="localhost:9000")
 KESSEL_INVENTORY_CLOWDER_APPLICATION_NAME = "kessel-inventory"
 INVENTORY_API_PORT = 9000
-if CLOWDER_ENABLED and "INVENTORY_API_SERVER" not in os.environ:
+if CLOWDER_ENABLED and ENVIRONMENT.get_value("INVENTORY_API_SERVER", default=None) is None:
     try:
         hostname = DependencyEndpoints[KESSEL_INVENTORY_CLOWDER_APPLICATION_NAME]["api"].hostname
         INVENTORY_API_SERVER = f"{hostname}:{INVENTORY_API_PORT}"
