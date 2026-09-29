@@ -483,6 +483,7 @@ class PrincipalV2AccessDeniedTests(IdentityRequest):
         response = client.get(V2_URL, **self.non_admin_headers)
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        _mock_kessel.assert_called_once()
 
     @patch(KESSEL_FALLBACK_PATCH, return_value=False)
     def test_retrieve_denied_for_non_admin_without_read(self, _mock_kessel):
@@ -491,6 +492,7 @@ class PrincipalV2AccessDeniedTests(IdentityRequest):
         response = client.get(f"{V2_URL}{uuid4()}/", **self.non_admin_headers)
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        _mock_kessel.assert_called_once()
 
     @patch(KESSEL_FALLBACK_PATCH, return_value=True)
     def test_list_allowed_via_kessel_fallback(self, mock_kessel):
