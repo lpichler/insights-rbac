@@ -17,13 +17,14 @@
 """Test the RoleV2Service."""
 
 import uuid
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch, wraps
 
 from django.test import override_settings
 from management.exceptions import RequiredFieldError
 from management.models import Group, Workspace, Permission
 from management.permission.scope_service import ImplicitResourceService, PermissionScopeCache
 from management.relation_replicator.outbox_replicator import OutboxReplicator
+from management.relation_replicator.relation_replicator import ReplicationEventType
 from management.role.definer import seed_roles
 from management.role.v2_exceptions import (
     InvalidRolePermissionsError,
@@ -738,6 +739,66 @@ class RoleV2ServiceTests(IdentityRequest):
         # We have created a role and a role binding, then destroyed them. We should have exactly the same tuples as
         # when we started.
         self.assertEqual(set(tuples), initial_tuples)
+
+    @override_settings(REPLICATION_TO_RELATION_ENABLED=True)
+    def test_delete_replication_includes_org_id(self):
+        """Test that delete replication events include org_id in event info."""
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+        spy = MagicMock(wraps=replicator.replicate)
+        replicator.replicate = spy
+
+        V2TenantBootstrapService(replicator=replicator).bootstrap_tenant(self.tenant, force=True)
+        spy.reset_mock()
+
+        service = RoleV2Service(tenant=self.tenant, replicator=replicator)
+        role = service.create("role1", "desc", [self.permission1_data], self.tenant)
+        spy.reset_mock()
+
+        service.bulk_delete([str(role.uuid)])
+
+        spy.assert_called_once()
+        event = spy.call_args[0][0]
+        self.assertEqual(event.event_type, ReplicationEventType.DELETE_CUSTOM_ROLE)
+        self.assertEqual(event.event_info["org_id"], self.tenant.org_id)
+        self.assertEqual(event.event_info["role_uuids"], [str(role.uuid)])
+
+    @override_settings(REPLICATION_TO_RELATION_ENABLED=True)
+    def test_delete_replication_groups_events_by_org_id(self):
+        """Test that cross-tenant bulk delete emits separate replication events per org_id."""
+        tuples = InMemoryTuples()
+        replicator = InMemoryRelationReplicator(tuples)
+
+        V2TenantBootstrapService(replicator=replicator).bootstrap_tenant(self.tenant, force=True)
+        tenant2 = V2TenantBootstrapService(replicator).new_bootstrapped_tenant("t2").tenant
+
+        spy = MagicMock(wraps=replicator.replicate)
+        replicator.replicate = spy
+
+        service = RoleV2Service(tenant=self.tenant, replicator=replicator)
+        role1 = service.create("role1", "desc", [self.permission1_data], self.tenant)
+        role2 = service.create("role2", "desc", [self.permission1_data], tenant2)
+        spy.reset_mock()
+
+        service.bulk_delete([str(role1.uuid), str(role2.uuid)])
+
+        self.assertEqual(spy.call_count, 2)
+
+        events_by_org = {}
+        for call in spy.call_args_list:
+            event = call[0][0]
+            self.assertEqual(event.event_type, ReplicationEventType.DELETE_CUSTOM_ROLE)
+            events_by_org[event.event_info["org_id"]] = event
+
+        self.assertIn(self.tenant.org_id, events_by_org)
+        self.assertIn(tenant2.org_id, events_by_org)
+
+        self.assertEqual(events_by_org[self.tenant.org_id].event_info["role_uuids"], [str(role1.uuid)])
+        self.assertEqual(events_by_org[tenant2.org_id].event_info["role_uuids"], [str(role2.uuid)])
+
+        # Each event should only contain tuples for roles in that org
+        for org_id, event in events_by_org.items():
+            self.assertTrue(len(event.remove) > 0, f"Event for org {org_id} should have tuples to remove")
 
 
 @override_settings(ATOMIC_RETRY_DISABLED=True)
