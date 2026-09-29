@@ -143,6 +143,37 @@ class TestWaitForSchema(TestCase):
 
         self.assertIn("Schema not ready after 10s", str(ctx.exception))
 
+    def test_negative_timeout_raises_error(self):
+        """Negative timeout raises CommandError instead of silently exiting."""
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema", timeout=-1, poll_interval=5)
+
+        self.assertIn("timeout and poll-interval must be positive integers", str(ctx.exception))
+
+    def test_zero_timeout_raises_error(self):
+        """Zero timeout raises CommandError instead of using env fallback."""
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema", timeout=0, poll_interval=5)
+
+        self.assertIn("timeout and poll-interval must be positive integers", str(ctx.exception))
+
+    def test_negative_poll_interval_raises_error(self):
+        """Negative poll-interval raises CommandError."""
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema", timeout=10, poll_interval=-1)
+
+        self.assertIn("timeout and poll-interval must be positive integers", str(ctx.exception))
+
+    @patch("management.management.commands.wait_for_schema.os")
+    def test_non_numeric_env_timeout_raises_error(self, mock_os):
+        """Non-numeric SCHEMA_READINESS_TIMEOUT env raises CommandError."""
+        mock_os.environ.get.return_value = "not_a_number"
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command("wait_for_schema")
+
+        self.assertIn("SCHEMA_READINESS_TIMEOUT must be an integer", str(ctx.exception))
+
     @patch("management.management.commands.wait_for_schema.time")
     @patch("management.management.commands.wait_for_schema.MigrationExecutor")
     @patch("management.management.commands.wait_for_schema.connections")

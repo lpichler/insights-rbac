@@ -50,8 +50,16 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         """Handle the command execution."""
-        timeout = options["timeout"] or int(os.environ.get("SCHEMA_READINESS_TIMEOUT", "300"))
+        timeout = options["timeout"]
+        if timeout is None:
+            raw = os.environ.get("SCHEMA_READINESS_TIMEOUT", "300")
+            try:
+                timeout = int(raw)
+            except ValueError:
+                raise CommandError("SCHEMA_READINESS_TIMEOUT must be an integer, got %r" % raw)
         poll_interval = options["poll_interval"]
+        if timeout <= 0 or poll_interval <= 0:
+            raise CommandError("timeout and poll-interval must be positive integers")
 
         self.stdout.write("Waiting for schema readiness (timeout=%ds, poll=%ds)..." % (timeout, poll_interval))
 
