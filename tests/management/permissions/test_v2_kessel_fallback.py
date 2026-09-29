@@ -32,7 +32,7 @@ from management.permissions.permission_access import PermissionAccessPermission
 from management.permissions.principal_access import PrincipalAccessPermission
 from management.permissions.principal_v2_access import PrincipalV2AccessPermission
 from management.permissions.role_access import RoleAccessPermission
-from management.permissions.utils import check_v2_kessel_access
+from management.permissions.utils import KESSEL_PRINCIPAL_READ_RELATION, check_v2_kessel_access
 
 
 class CheckV2KesselAccessTest(TestCase):
@@ -221,14 +221,14 @@ class PrincipalAccessV2FallbackTest(TestCase):
         """V2 user with no V1 access should be allowed when Kessel grants."""
         req = _make_v2_request()
         self.assertTrue(PrincipalAccessPermission().has_permission(req, None))
-        mock_kessel.assert_called_once_with(req)
+        mock_kessel.assert_called_once_with(req, relation=KESSEL_PRINCIPAL_READ_RELATION)
 
     @patch(_PATCH_PRINCIPAL, return_value=False)
     def test_v2_kessel_denies_read(self, mock_kessel):
         """V2 user should be denied when Kessel denies."""
         req = _make_v2_request()
         self.assertFalse(PrincipalAccessPermission().has_permission(req, None))
-        mock_kessel.assert_called_once_with(req)
+        mock_kessel.assert_called_once_with(req, relation=KESSEL_PRINCIPAL_READ_RELATION)
 
     @patch(_PATCH_PRINCIPAL, return_value=True)
     def test_non_get_not_affected(self, mock_kessel):
@@ -263,7 +263,7 @@ class PrincipalV2AccessFallbackTest(TestCase):
         """V2 user with no V1 access should be allowed when Kessel grants."""
         req = _make_v2_request()
         self.assertTrue(PrincipalV2AccessPermission().has_permission(req, None))
-        mock_kessel.assert_called_once_with(req)
+        mock_kessel.assert_called_once_with(req, relation=KESSEL_PRINCIPAL_READ_RELATION)
 
     @patch(_PATCH_PRINCIPAL_V2, return_value=False)
     def test_v2_kessel_denies_read(self, mock_kessel):
@@ -272,7 +272,7 @@ class PrincipalV2AccessFallbackTest(TestCase):
         # request.path used by SEC-MON denial logging
         req.path = "/api/rbac/v2/principals/"
         self.assertFalse(PrincipalV2AccessPermission().has_permission(req, None))
-        mock_kessel.assert_called_once_with(req)
+        mock_kessel.assert_called_once_with(req, relation=KESSEL_PRINCIPAL_READ_RELATION)
 
     @patch(_PATCH_PRINCIPAL_V2, return_value=True)
     def test_non_safe_method_not_affected(self, mock_kessel):
