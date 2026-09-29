@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 export ACCESS_CACHE_CONNECT_SIGNALS=False
 
@@ -37,4 +38,21 @@ then
     python /opt/rbac/rbac/manage.py seeds
 else
     echo "Migrations should not be run <----"
+    # Other deployments may assign migrations to a separate service. Do not
+    # start this process until that service has applied the full schema.
+    python /opt/rbac/rbac/manage.py wait_for_db
+
+    MAX_WAIT=600
+    WAIT_INTERVAL=5
+    ELAPSED=0
+    echo "Waiting for schema migrations to finish..."
+    until python /opt/rbac/rbac/manage.py migrate --check --noinput --verbosity 0 >/dev/null 2>&1; do
+        if [[ ${ELAPSED} -ge ${MAX_WAIT} ]]; then
+            echo "ERROR: database migrations are still pending after ${MAX_WAIT}s."
+            exit 1
+        fi
+        sleep "${WAIT_INTERVAL}"
+        ELAPSED=$((ELAPSED + WAIT_INTERVAL))
+    done
+    echo "Database schema is up to date."
 fi

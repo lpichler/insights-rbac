@@ -43,6 +43,11 @@ services:
       # Full-Kessel is a development stack. Keep Django from requiring a
       # production secret key that is intentionally not checked into the repo.
       DJANGO_DEBUG: "True"
+      # The init container migrates and seeds before this service starts.
+      # Avoid repeating database-backed seeding from AppConfig.ready().
+      PERMISSION_SEEDING_ENABLED: "False"
+      ROLE_SEEDING_ENABLED: "False"
+      GROUP_SEEDING_ENABLED: "False"
       # The local VM exposes two CPUs, which otherwise starts four Gunicorn
       # workers and leaves too little memory for the rest of the stack.
       POD_CPU_LIMIT: "1"
@@ -86,6 +91,14 @@ services:
       timeout: 5s
       retries: 12
 
+  # Keep the migration and serving containers on the same current SpiceDB
+  # release; the upstream Compose file otherwise follows the mutable latest tag.
+  spicedb-migrate:
+    image: authzed/spicedb:v1.56.2
+
+  spicedb:
+    image: authzed/spicedb:v1.56.2
+
   zookeeper:
     environment:
       KAFKA_HEAP_OPTS: "-Xms32M -Xmx64M"
@@ -107,8 +120,14 @@ services:
   rbac-worker:
     environment:
       DJANGO_DEBUG: "True"
+      PERMISSION_SEEDING_ENABLED: "False"
+      ROLE_SEEDING_ENABLED: "False"
+      GROUP_SEEDING_ENABLED: "False"
       READ_YOUR_WRITES_WORKSPACE_ENABLED: "True"
       READ_YOUR_WRITES_TIMEOUT_SECONDS: "30"
+    depends_on:
+      rbac-migrate:
+        condition: service_completed_successfully
     # `celery status` starts a broker RPC for every probe and is unreliable
     # while the constrained local stack is starting. The process check still
     # lets rbac-server wait for the worker container to be running.
@@ -123,6 +142,12 @@ services:
   rbac-scheduler:
     environment:
       DJANGO_DEBUG: "True"
+      PERMISSION_SEEDING_ENABLED: "False"
+      ROLE_SEEDING_ENABLED: "False"
+      GROUP_SEEDING_ENABLED: "False"
+    depends_on:
+      rbac-migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "kill -0 1"]
       interval: 30s
