@@ -119,10 +119,12 @@ When a scenario is expected to behave differently for a particular combination
 the expected status per combination and assert it separately. If a combination
 is intentionally skipped for a scenario, print a `SKIP` line with the reason.
 
-For V2 writes that replicate to Kessel, an HTTP success response is not enough.
-Wait for the expected direct SpiceDB tuple, assert it exists, and print it. For
-deletes, wait until the tuple is absent and report that removal. Use the
-persisted `t_*` relation names, for example:
+When an API endpoint produces Kessel relations (creates, updates, or deletes
+SpiceDB tuples), the validation script must include Kessel relation checks for
+that endpoint. An HTTP success response alone is not enough. Wait for the
+expected direct SpiceDB tuple, assert it exists, and print it. For deletes,
+wait until the tuple is absent and report that removal. Use the persisted
+`t_*` relation names, for example:
 
 ```text
 rbac/workspace:<workspace-id> t_binding rbac/role_binding:<binding-id>
@@ -206,10 +208,46 @@ scope; a tenant-scoped RBAC permission cannot be used for that binding.
 
 ### Output
 
-Output should be readable during a local debugging session:
+Output should be readable during a local debugging session. Use the following
+canonical scenario format:
 
-- Group requests into numbered scenarios.
-- Use consistent markers for success, failure, and Kessel tuple checks.
+```text
+━━ SCENARIO X ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<Short description of the scenario>
+  Request:  <HTTP method> <path> with <relevant payload or parameters>
+  Expected: <HTTP status>; <what should happen>
+  Why:      <reason this scenario matters; e.g. authorization rule, replication constraint>
+PASS: <METHOD> <url> -> HTTP <status>
+PASS: <additional assertion description>
+PASS: Kessel relation removed: <tuple that should no longer exist>
+PASS: Kessel relation ready: <tuple description>
+  rbac/role_binding:<id> t_subject rbac/principal:<domain>/<user-id>
+PASS: Kessel relation ready: <another tuple description>
+  rbac/role_binding:<id> t_role rbac/role:<role-id>
+```
+
+Every scenario block must include:
+
+1. **Header** — `━━ SCENARIO <number> ━━━━…` followed by a description.
+2. **Request** — the HTTP method, path, and key payload or query parameters.
+3. **Expected** — the expected HTTP status and observable outcome.
+4. **Why** — the reason this scenario matters (authorization rule, replication
+   constraint, edge case, etc.).
+5. **Results** — one `PASS` or `FAIL` line per assertion, including the HTTP
+   call and any follow-up checks.
+6. **Kessel relation checks** (when the endpoint produces relations) — one
+   `PASS`/`FAIL` line per tuple, with the full relation triple printed on the
+   next line. Use the `t_*` relation names:
+
+   ```text
+   PASS: Kessel relation ready: role binding points to its role
+     rbac/role_binding:01a0f225-8bce-7913-89f0-53931a827e87 t_role rbac/role:01a0f225-7728-7671-92cc-3c1f0ae03a53
+   PASS: Kessel relation ready: role binding contains the allowed user
+     rbac/role_binding:01a0f225-8bce-7913-89f0-53931a827e87 t_subject rbac/principal:redhat/v2-crud-user-1790768910-60777
+   ```
+
+Additional output rules:
+
 - Support terminal colors automatically, with a plain-text fallback for CI or
   redirected output. Honor `NO_COLOR`; use `COLOR=always` only when a caller
   wants forced color.
