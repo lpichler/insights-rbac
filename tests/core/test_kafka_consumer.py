@@ -711,14 +711,20 @@ class RBACKafkaConsumerTests(TestCase):
         self.assertEqual(delete_fencing_check.lock_id, "test-group/0")
         self.assertEqual(delete_fencing_check.lock_token, "test-lock-token")
 
+    @patch("core.kafka_consumer.logger")
     @patch("core.kafka_consumer.json_format.ParseDict")
     @patch("core.kafka_consumer.relations_api_replication.write_relationships")
     @patch("core.kafka_consumer.relations_api_replication.delete_relationships")
     @patch("core.kafka_consumer._save_consistency_token_best_effort")
     def test_system_role_without_tenant_id_does_not_warn(
-        self, mock_save_token, mock_delete, mock_write, mock_parse_dict
+        self, mock_save_token, mock_delete, mock_write, mock_parse_dict, mock_logger
     ):
-        """Global system-role events with missing/empty org_id must not warn or save a token."""
+        """Global system-role events with missing/empty org_id must not warn or save a token.
+
+        Uses mock-based logger assertions instead of assertNoLogs because Django's
+        test runner calls logging.disable(CRITICAL) which prevents assertNoLogs from
+        detecting real log records.
+        """
         mock_parse_dict.return_value = Mock()
         mock_write.return_value = Mock(consistency_token=Mock(token="system-role-token"))
         mock_delete.return_value = Mock(consistency_token=Mock(token=None))
@@ -736,6 +742,7 @@ class RBACKafkaConsumerTests(TestCase):
                     mock_save_token.reset_mock()
                     mock_write.reset_mock()
                     mock_delete.reset_mock()
+                    mock_logger.reset_mock()
 
                     payload = {
                         "relations_to_add": [
@@ -755,21 +762,27 @@ class RBACKafkaConsumerTests(TestCase):
                         payload=payload,
                     )
 
-                    with self.assertNoLogs("rbac.core.kafka_consumer", level="WARNING"):
-                        self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 44))
+                    self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 44))
 
+                    mock_logger.warning.assert_not_called()
                     mock_save_token.assert_not_called()
                     mock_write.assert_called_once()
                     mock_delete.assert_called_once()
 
+    @patch("core.kafka_consumer.logger")
     @patch("core.kafka_consumer.json_format.ParseDict")
     @patch("core.kafka_consumer.relations_api_replication.write_relationships")
     @patch("core.kafka_consumer.relations_api_replication.delete_relationships")
     @patch("core.kafka_consumer._save_consistency_token_best_effort")
     def test_non_system_role_without_org_id_still_warns(
-        self, mock_save_token, mock_delete, mock_write, mock_parse_dict
+        self, mock_save_token, mock_delete, mock_write, mock_parse_dict, mock_logger
     ):
-        """Non-system-role events with missing org_id must still emit a WARNING."""
+        """Non-system-role events with missing org_id must still emit a WARNING.
+
+        Uses mock-based logger assertions instead of assertLogs because Django's
+        test runner calls logging.disable(CRITICAL) which prevents assertLogs from
+        capturing log records.
+        """
         mock_parse_dict.return_value = Mock()
         mock_write.return_value = Mock(consistency_token=Mock(token="some-token"))
         mock_delete.return_value = Mock(consistency_token=Mock(token=None))
@@ -795,10 +808,11 @@ class RBACKafkaConsumerTests(TestCase):
             },
         )
 
-        with self.assertLogs("rbac.core.kafka_consumer", level="WARNING") as cm:
-            self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 55))
+        self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 55))
 
-        self.assertTrue(any("No consistency token" in msg for msg in cm.output))
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args[0][0]
+        self.assertIn("No consistency token", warning_msg)
         mock_save_token.assert_not_called()
 
     @patch("internal.migration_coordination.migration_notify_coordination")
