@@ -56,6 +56,17 @@ Rules:
 - Filter backends narrow the queryset to only authorized objects. For detail views, this produces 404 (not 403) for inaccessible objects, preventing existence leakage.
 - Always list the access filter backend first in `filter_backends` so access filtering happens before other filters.
 
+### Mixed-method routes (one `@action` serving GET/POST/DELETE on the same path)
+
+DRF automatically routes `HEAD` to the `GET` handler whenever a route accepts `GET` (`'head' not in actions` -> `actions['head'] = actions['get']`, see `rest_framework/viewsets.py`). A mixed-method `@action(detail=True, methods=["get", "post", "delete"])` therefore also receives `HEAD`, `OPTIONS`, and any other method DRF's router does not explicitly reject.
+
+Two failure modes compound if you don't guard against this:
+
+1. **View dispatch that falls through to a default branch** (`if GET: ... ; if POST: ...; return <write action>`) routes `HEAD` into whatever the final `else`/fallthrough does -- e.g. a bulk-delete. Always dispatch with an explicit branch per accepted method and return 405 for anything else (see `GroupViewSet.principals` in `rbac/management/group/view.py` for the safe v1 pattern: `if/elif/elif` + explicit 405, not `if/if/else`).
+2. **A permission class that special-cases mixed-method actions by an allowlist of write methods** (e.g. `MIXED_METHOD_WRITE_ACTIONS = {"principals": {"POST", "DELETE"}}`) fails **open** for any method not in that set, including `HEAD` -- granting the read-level relation to a request that, per (1), may still perform a write. Prefer allowlisting the *read* methods (`{"GET", "HEAD", "OPTIONS"}`) and treating every other method as requiring the write relation, so an unanticipated method fails closed instead of open.
+
+This combination shipped to production once (`GroupV2ViewSet.principals`, PR #3438 / RHCLOUD-51545, fixed in RHCLOUD-51640): a caller holding only the read relation could send `HEAD` with removal query params and bulk-remove group members. Write a permission-relation test that iterates every HTTP method (not just the ones you expect), and a request test asserting `HEAD` never mutates state, for any new mixed-method route.
+
 ### v1 permission pattern
 
 v1 endpoints use `request.user.access` (preloaded in middleware) to check read/write permissions:
