@@ -18,6 +18,7 @@
 """Tests for the Principal V2 API."""
 
 from importlib import reload
+from unittest.mock import patch
 from uuid import uuid4
 
 from django.test.utils import override_settings
@@ -34,6 +35,7 @@ from api.models import Tenant
 from rbac import urls
 
 V2_URL = "/api/rbac/v2/principals/"
+KESSEL_FALLBACK_PATCH = "management.permissions.principal_v2_access.check_v2_kessel_access"
 
 
 @override_settings(V2_APIS_ENABLED=True)
@@ -474,19 +476,32 @@ class PrincipalV2AccessDeniedTests(IdentityRequest):
         self.non_admin_request = non_admin_context["request"]
         self.non_admin_headers = self.non_admin_request.META
 
-    def test_list_denied_for_non_admin_without_read(self):
+    @patch(KESSEL_FALLBACK_PATCH, return_value=False)
+    def test_list_denied_for_non_admin_without_read(self, _mock_kessel):
         """Non-admin user without principal:read gets 403 on list."""
         client = APIClient()
         response = client.get(V2_URL, **self.non_admin_headers)
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        _mock_kessel.assert_called_once()
 
-    def test_retrieve_denied_for_non_admin_without_read(self):
+    @patch(KESSEL_FALLBACK_PATCH, return_value=False)
+    def test_retrieve_denied_for_non_admin_without_read(self, _mock_kessel):
         """Non-admin user without principal:read gets 403 on retrieve."""
         client = APIClient()
         response = client.get(f"{V2_URL}{uuid4()}/", **self.non_admin_headers)
 
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        _mock_kessel.assert_called_once()
+
+    @patch(KESSEL_FALLBACK_PATCH, return_value=True)
+    def test_list_allowed_via_kessel_fallback(self, mock_kessel):
+        """Non-admin without V1 access is allowed when Kessel grants."""
+        client = APIClient()
+        response = client.get(V2_URL, **self.non_admin_headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_kessel.assert_called_once()
 
 
 class PrincipalV2DisabledTests(IdentityRequest):
