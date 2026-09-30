@@ -81,6 +81,52 @@ message rather than a fixed sleep. Read-only scenarios should print the
 relevant existing tuples when available, but must not create state solely to
 make a read check pass.
 
+#### Cover HEAD response handling
+
+For any validation script that sends a `HEAD` request, generate an offline
+regression test that exercises its real request path against a local stub
+server. Have the stub return the expected status (such as `401`) and a nonzero
+`Content-Length`, but no response body, as required for `HEAD`. Assert that
+curl exits successfully, the script reports the expected status, and it does
+not fail with curl error 18 ("transfer closed with outstanding read data
+remaining").
+
+The test must catch using `--request HEAD` or `-X HEAD` without a
+body-suppressing option; use `--head`/`-I` or the equivalent instead. Do not
+rely only on checking the script's text for the right curl flag — run the
+script against the stub and verify its exit code and output.
+
+A minimal stub server for this purpose:
+
+```python
+#!/usr/bin/env python3
+"""Stub HTTP server that returns status-only HEAD responses."""
+import http.server
+import sys
+
+class HeadStubHandler(http.server.BaseHTTPRequestHandler):
+    def do_HEAD(self):
+        self.send_response(int(sys.argv[2]) if len(sys.argv) > 2 else 401)
+        self.send_header("Content-Length", "42")
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        pass  # silence request logs during tests
+
+if __name__ == "__main__":
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9999
+    with http.server.HTTPServer(("127.0.0.1", port), HeadStubHandler) as srv:
+        srv.handle_request()  # serve exactly one request, then exit
+```
+
+The regression test should:
+
+1. Start the stub on a free port.
+2. Point the validation script at the stub's URL.
+3. Assert the script exits `0` and prints the expected status.
+4. Assert curl does not produce error 18.
+5. Tear down the stub in a `trap` handler.
+
 ### Local authorization
 
 The local development identity may not have the Kessel permissions needed for
