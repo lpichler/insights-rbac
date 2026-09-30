@@ -18,7 +18,7 @@
 
 import logging
 
-from management.permissions.utils import check_v2_kessel_access
+from management.permissions.utils import KESSEL_PRINCIPAL_READ_RELATION, check_v2_kessel_access
 from rest_framework import permissions
 
 from rbac.env import ENVIRONMENT
@@ -39,7 +39,7 @@ class PrincipalAccessPermission(permissions.BasePermission):
             principal_read = request.user.access.get("principal", {}).get("read", [])
             if principal_read:
                 return True
-            if check_v2_kessel_access(request):
+            if check_v2_kessel_access(request, relation=KESSEL_PRINCIPAL_READ_RELATION):
                 return True
 
         # Authorization failure - SEC-MON-REQ-1 compliance (EOI-8 authorization_failure)
