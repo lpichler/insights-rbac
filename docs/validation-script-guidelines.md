@@ -82,10 +82,20 @@ active combination is immediately visible in the terminal:
 
 ```text
 ━━━ Scenario 3: list workspaces ━━━
+  ── V1 route (/api/rbac/v1/workspaces/) ──
   ▶ [V1 NON-ADMIN] local-v1-non-org-admin
     GET /api/rbac/v1/workspaces/ → 200 … PASS
   ▶ [V1 ADMIN] local-v1-org-admin
     GET /api/rbac/v1/workspaces/ → 200 … PASS
+  ▶ [V2 NON-ADMIN] local-v2-non-admin
+    GET /api/rbac/v1/workspaces/ → 200 … PASS
+  ▶ [V2 ADMIN] local-v2-org-admin
+    GET /api/rbac/v1/workspaces/ → 200 … PASS
+  ── V2 route (/api/rbac/v2/workspaces/) ──
+  ▶ [V1 NON-ADMIN] local-v1-non-org-admin
+    GET /api/rbac/v2/workspaces/ → 200 … PASS
+  ▶ [V1 ADMIN] local-v1-org-admin
+    GET /api/rbac/v2/workspaces/ → 200 … PASS
   ▶ [V2 NON-ADMIN] local-v2-non-admin
     GET /api/rbac/v2/workspaces/ → 200 … PASS
   ▶ [V2 ADMIN] local-v2-org-admin
