@@ -1407,9 +1407,16 @@ class RBACKafkaConsumer:
                 replication_delete_response.consistency_token, "token", None
             )
 
-            if token and org_id:
-                _save_consistency_token_best_effort(org_id, token, debezium_msg.aggregateid)
-            else:
+            normalized_org_id = org_id.strip() if isinstance(org_id, str) else org_id
+            is_global_system_role_event = event_type in {
+                "create_system_role",
+                "update_system_role",
+                "delete_system_role",
+            } and normalized_org_id in (None, "", "None")
+
+            if token and normalized_org_id and not is_global_system_role_event:
+                _save_consistency_token_best_effort(normalized_org_id, token, debezium_msg.aggregateid)
+            elif not is_global_system_role_event:
                 logger.warning(
                     f"No consistency token in either write or delete response - "
                     f"org_id: {org_id}, "

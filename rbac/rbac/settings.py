@@ -56,9 +56,20 @@ GLITCHTIP_DSN = os.getenv("GLITCHTIP_DSN", "")
 if GLITCHTIP_DSN:
     import sentry_sdk
     from sentry_sdk.integrations.django import DjangoIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
     from sentry_sdk.integrations.redis import RedisIntegration
 
-    sentry_sdk.init(dsn=GLITCHTIP_DSN, integrations=[DjangoIntegration(), RedisIntegration()])
+    from .sentry_kafka_filter import _filter_kafka_benign_events
+
+    sentry_sdk.init(
+        dsn=GLITCHTIP_DSN,
+        integrations=[
+            DjangoIntegration(),
+            RedisIntegration(),
+            LoggingIntegration(level=logging.INFO, event_level=logging.ERROR),
+        ],
+        before_send=_filter_kafka_benign_events,
+    )
     print("Sentry SDK initialization using Glitchtip was successful!")
 else:
     print("GLITCHTIP_DSN was not set, skipping Glitchtip initialization.")
@@ -708,7 +719,7 @@ TOKEN_GRANT_TYPE = ENVIRONMENT.get_value("TOKEN_GRANT_TYPE", default="client_cre
 RELATION_API_SERVER = ENVIRONMENT.get_value("RELATION_API_SERVER", default="localhost:9000")
 KESSEL_RELATION_CLOWDER_APPLICATION_NAME = "kessel-relations"
 
-if ENVIRONMENT.bool("CLOWDER_ENABLED", default=False):
+if CLOWDER_ENABLED and ENVIRONMENT.get_value("RELATION_API_SERVER", default=None) is None:
     try:
         hostname = DependencyEndpoints[KESSEL_RELATION_CLOWDER_APPLICATION_NAME]["api"].hostname
         RELATION_API_SERVER = f"{hostname}:9000"
@@ -736,7 +747,7 @@ INVENTORY_API_LOCAL = ENVIRONMENT.bool("INVENTORY_API_LOCAL", default=True)
 INVENTORY_API_SERVER = ENVIRONMENT.get_value("INVENTORY_API_SERVER", default="localhost:9000")
 KESSEL_INVENTORY_CLOWDER_APPLICATION_NAME = "kessel-inventory"
 INVENTORY_API_PORT = 9000
-if CLOWDER_ENABLED:
+if CLOWDER_ENABLED and ENVIRONMENT.get_value("INVENTORY_API_SERVER", default=None) is None:
     try:
         hostname = DependencyEndpoints[KESSEL_INVENTORY_CLOWDER_APPLICATION_NAME]["api"].hostname
         INVENTORY_API_SERVER = f"{hostname}:{INVENTORY_API_PORT}"
