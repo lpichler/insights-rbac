@@ -711,6 +711,110 @@ class RBACKafkaConsumerTests(TestCase):
         self.assertEqual(delete_fencing_check.lock_id, "test-group/0")
         self.assertEqual(delete_fencing_check.lock_token, "test-lock-token")
 
+    @patch("core.kafka_consumer.logger")
+    @patch("core.kafka_consumer.json_format.ParseDict")
+    @patch("core.kafka_consumer.relations_api_replication.write_relationships")
+    @patch("core.kafka_consumer.relations_api_replication.delete_relationships")
+    @patch("core.kafka_consumer._save_consistency_token_best_effort")
+    def test_system_role_without_tenant_id_does_not_warn(
+        self, mock_save_token, mock_delete, mock_write, mock_parse_dict, mock_logger
+    ):
+        """Global system-role events with missing/empty org_id must not warn or save a token.
+
+        Uses mock-based logger assertions instead of assertNoLogs because Django's
+        test runner calls logging.disable(CRITICAL) which prevents assertNoLogs from
+        detecting real log records.
+        """
+        mock_parse_dict.return_value = Mock()
+        mock_write.return_value = Mock(consistency_token=Mock(token="system-role-token"))
+        mock_delete.return_value = Mock(consistency_token=Mock(token=None))
+
+        consumer = RBACKafkaConsumer()
+        consumer.lock_id = "test-group/0"
+        consumer.lock_token = "test-lock-token"
+
+        event_types = ["create_system_role", "update_system_role", "delete_system_role"]
+        org_id_variants = ["None", "", "  ", None]
+
+        for evt in event_types:
+            for org_val in org_id_variants:
+                with self.subTest(event_type=evt, org_id=org_val):
+                    mock_save_token.reset_mock()
+                    mock_write.reset_mock()
+                    mock_delete.reset_mock()
+                    mock_logger.reset_mock()
+
+                    payload = {
+                        "relations_to_add": [
+                            {
+                                "resource": {"type": "rbac", "id": "role1"},
+                                "subject": {"type": "rbac", "id": "*"},
+                                "relation": "member",
+                            }
+                        ],
+                        "relations_to_remove": [],
+                        "resource_context": {"org_id": org_val, "event_type": evt},
+                    }
+                    debezium_msg = DebeziumMessage(
+                        aggregatetype="relations",
+                        aggregateid=f"system-role-{evt}-{org_val}",
+                        event_type=evt,
+                        payload=payload,
+                    )
+
+                    self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 44))
+
+                    mock_logger.warning.assert_not_called()
+                    mock_save_token.assert_not_called()
+                    mock_write.assert_called_once()
+                    mock_delete.assert_called_once()
+
+    @patch("core.kafka_consumer.logger")
+    @patch("core.kafka_consumer.json_format.ParseDict")
+    @patch("core.kafka_consumer.relations_api_replication.write_relationships")
+    @patch("core.kafka_consumer.relations_api_replication.delete_relationships")
+    @patch("core.kafka_consumer._save_consistency_token_best_effort")
+    def test_non_system_role_without_org_id_still_warns(
+        self, mock_save_token, mock_delete, mock_write, mock_parse_dict, mock_logger
+    ):
+        """Non-system-role events with missing org_id must still emit a WARNING.
+
+        Uses mock-based logger assertions instead of assertLogs because Django's
+        test runner calls logging.disable(CRITICAL) which prevents assertLogs from
+        capturing log records.
+        """
+        mock_parse_dict.return_value = Mock()
+        mock_write.return_value = Mock(consistency_token=Mock(token="some-token"))
+        mock_delete.return_value = Mock(consistency_token=Mock(token=None))
+
+        consumer = RBACKafkaConsumer()
+        consumer.lock_id = "test-group/0"
+        consumer.lock_token = "test-lock-token"
+
+        debezium_msg = DebeziumMessage(
+            aggregatetype="relations",
+            aggregateid="tenant-scoped-event",
+            event_type="create_custom_role",
+            payload={
+                "relations_to_add": [
+                    {
+                        "resource": {"type": "rbac", "id": "role1"},
+                        "subject": {"type": "rbac", "id": "user1"},
+                        "relation": "member",
+                    }
+                ],
+                "relations_to_remove": [],
+                "resource_context": {"org_id": "", "event_type": "create_custom_role"},
+            },
+        )
+
+        self.assertTrue(consumer._process_relations_message(debezium_msg, 0, 55))
+
+        mock_logger.warning.assert_called_once()
+        warning_msg = mock_logger.warning.call_args[0][0]
+        self.assertIn("No consistency token", warning_msg)
+        mock_save_token.assert_not_called()
+
     @patch("internal.migration_coordination.migration_notify_coordination")
     @patch("core.kafka_consumer.connection.cursor")
     @patch("core.kafka_consumer.json_format.ParseDict")
