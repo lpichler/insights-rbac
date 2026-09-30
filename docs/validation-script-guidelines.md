@@ -65,6 +65,50 @@ and identity in scenario output. When fixtures provide different API-generation
 or privilege variants, test each relevant combination and report route version,
 identity generation, and administrator status as separate dimensions.
 
+#### User combination matrix
+
+Every generated test scenario must run for all four identity combinations:
+
+| Combination | User fixture | `is_org_admin` |
+| --- | --- | --- |
+| V1 non-admin | `local-v1-non-org-admin` | no |
+| V1 admin | `local-v1-org-admin` | yes |
+| V2 non-admin | `local-v2-non-admin` | no |
+| V2 admin | `local-v2-org-admin` | yes |
+
+The script must iterate the matrix automatically. For each scenario execution,
+print which user is active before any request output. Use colored labels so the
+active combination is immediately visible in the terminal:
+
+```text
+━━━ Scenario 3: list workspaces ━━━
+  ▶ [V1 NON-ADMIN] local-v1-non-org-admin
+    GET /api/rbac/v1/workspaces/ → 200 … PASS
+  ▶ [V1 ADMIN] local-v1-org-admin
+    GET /api/rbac/v1/workspaces/ → 200 … PASS
+  ▶ [V2 NON-ADMIN] local-v2-non-admin
+    GET /api/rbac/v2/workspaces/ → 200 … PASS
+  ▶ [V2 ADMIN] local-v2-org-admin
+    GET /api/rbac/v2/workspaces/ → 200 … PASS
+```
+
+Assign a distinct ANSI color to each combination and keep the mapping
+consistent across the entire script run:
+
+```bash
+# Example color map (256-color safe)
+V1_NON_ADMIN_COLOR="\033[0;33m"   # yellow
+V1_ADMIN_COLOR="\033[0;35m"       # magenta
+V2_NON_ADMIN_COLOR="\033[0;36m"   # cyan
+V2_ADMIN_COLOR="\033[0;32m"       # green
+RESET="\033[0m"
+```
+
+When a scenario is expected to behave differently for a particular combination
+(for example, a non-admin receives `403` while an admin receives `200`), state
+the expected status per combination and assert it separately. If a combination
+is intentionally skipped for a scenario, print a `SKIP` line with the reason.
+
 For V2 writes that replicate to Kessel, an HTTP success response is not enough.
 Wait for the expected direct SpiceDB tuple, assert it exists, and print it. For
 deletes, wait until the tuple is absent and report that removal. Use the
