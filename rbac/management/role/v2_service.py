@@ -21,7 +21,6 @@ import logging
 import uuid
 from typing import Iterable, Optional
 
-from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q, QuerySet
@@ -39,14 +38,13 @@ from management.permission.scope_service import (
     scopes_for_resource_type,
 )
 from management.permission.service import PermissionService
-from management.relation_replicator.noop_replicator import NoopReplicator
-from management.relation_replicator.outbox_replicator import OutboxReplicator
 from management.relation_replicator.relation_replicator import (
     PartitionKey,
     RelationReplicator,
     ReplicationEvent,
     ReplicationEventType,
 )
+from management.relation_replicator.replicated_mutation import default_replicator, replicated_mutation
 from management.relation_replicator.types import RelationTuple
 from management.role.v2_exceptions import (
     CustomRoleRequiredError,
@@ -88,10 +86,7 @@ class RoleV2Service:
         """Initialize the service."""
         self.tenant = tenant
         self.permission_service = PermissionService()
-        if settings.REPLICATION_TO_RELATION_ENABLED:
-            self._replicator = replicator if replicator is not None else OutboxReplicator()
-        else:
-            self._replicator = NoopReplicator()
+        self._replicator = default_replicator(replicator)
 
     def _validate_and_resolve_permissions(self, permission_data: list[dict]) -> list:
         """
@@ -156,19 +151,15 @@ class RoleV2Service:
                 description=description,
                 tenant=tenant,
             )
-            role.save()
-            role.permissions.set(permissions)
 
-            tuples_to_add = RoleV2.tuples_for_create(role=role, cached_permissions=permissions)
-
-            self._replicator.replicate(
-                ReplicationEvent(
-                    event_type=ReplicationEventType.CREATE_CUSTOM_ROLE,
-                    info={"role_uuid": str(role.uuid), "org_id": str(tenant.org_id)},
-                    partition_key=PartitionKey.byEnvironment(),
-                    add=tuples_to_add,
-                )
-            )
+            with replicated_mutation(
+                ReplicationEventType.CREATE_CUSTOM_ROLE,
+                info={"role_uuid": str(role.uuid), "org_id": str(tenant.org_id)},
+                tuples=lambda: (RoleV2.tuples_for_create(role=role, cached_permissions=permissions), []),
+                replicator=self._replicator,
+            ):
+                role.save()
+                role.permissions.set(permissions)
 
             logger.info(
                 "Created custom role '%s' (uuid=%s) with %d permissions for tenant %s",
@@ -220,27 +211,21 @@ class RoleV2Service:
             if not role:
                 raise NotFoundError("role", role_uuid)
 
-            # Capture current state before update for outbox replication
-            # The permissions are already loaded from prefetch_related above
+            # Capture current state before update — must happen before the mutation block
+            # so the lambda can close over old_permissions for the tuple diff.
             old_permissions = list(role.permissions.all())
 
-            role.update(name, description)
-            role.save()
-            role.permissions.set(permissions)
-
-            tuples_to_add, tuples_to_remove = RoleV2.tuples_for_update(
-                role, old_permissions=old_permissions, new_permissions=permissions
-            )
-
-            self._replicator.replicate(
-                ReplicationEvent(
-                    event_type=ReplicationEventType.UPDATE_CUSTOM_ROLE,
-                    info={"role_uuid": str(role.uuid), "org_id": str(tenant.org_id)},
-                    partition_key=PartitionKey.byEnvironment(),
-                    add=tuples_to_add,
-                    remove=tuples_to_remove,
-                )
-            )
+            with replicated_mutation(
+                ReplicationEventType.UPDATE_CUSTOM_ROLE,
+                info={"role_uuid": str(role.uuid), "org_id": str(tenant.org_id)},
+                tuples=lambda: RoleV2.tuples_for_update(
+                    role, old_permissions=old_permissions, new_permissions=permissions
+                ),
+                replicator=self._replicator,
+            ):
+                role.update(name, description)
+                role.save()
+                role.permissions.set(permissions)
             logger.info(
                 "Updated custom role '%s' (uuid=%s) with %d permissions for tenant %s",
                 role.name,
