@@ -294,6 +294,17 @@ should create or select a second tenant and use that tenant's `org_id` and
 user identity; never change only the username while keeping the first tenant's
 header.
 
+### Resolve the local V2 route prefix
+
+OpenAPI `paths` are relative to the service prefix. For Group V2, the RBAC
+router registers `groups` in `rbac/management/v2_urls.py`, producing the
+`/groups/` collection route. `rbac/rbac/urls.py` mounts that router below
+`API_PATH_PREFIX` plus `v2/`. The prefix is configurable: its source default is
+`api/`, while `docker-compose.local.yml` sets `/api/rbac` for the local stack.
+Therefore the local Group V2 collection URL is
+`http://localhost:9080/api/rbac/v2/groups/`. If the local stack overrides
+`API_PATH_PREFIX`, use that effective value instead of the default example.
+
 ## V1 access versus V2 role bindings
 
 The fixture helper creates V2 custom roles with permission entries shaped like
