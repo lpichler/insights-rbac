@@ -349,10 +349,11 @@ contain underscores.
 
 Record the derivation in the generated scenario, for example:
 `GroupV2KesselAccessPermission._get_relation(list, GET)` requires
-`rbac_groups_read` on the tenant; the exact role permission is
-`rbac:groups:read`; bind that role to the test user on the same tenant.
+`rbac_groups_read` on the tenant. Then confirm that `rbac:groups:read` exists
+in the active RBAC permission catalog and that the active Kessel schema can
+resolve `rbac_groups_read` before creating a role with that permission.
 
-### Verified Group V2 mapping
+### Group V2 mapping and required catalog entries
 
 The current `rbac/management/permissions/group_v2_access.py` implementation
 defines `RESOURCE_TYPE = "tenant"` and checks the request tenant's
@@ -364,14 +365,48 @@ defines `RESOURCE_TYPE = "tenant"` and checks the request tenant's
 | `principals` with `GET`, `HEAD`, or `OPTIONS` | `rbac_groups_read` | `application: rbac`, `resource_type: groups`, `operation: read` | `type: tenant`, `id: current` |
 | All other actions or methods, including group or membership writes | `rbac_groups_write` | `application: rbac`, `resource_type: groups`, `operation: write` | `type: tenant`, `id: current` |
 
-The fixture permission's V2 string is `rbac_groups_read` or
-`rbac_groups_write`, matching the relation constants checked by that class.
+The table describes the permission class's intended mapping. The current
+repository's `rbac/management/role/permissions/` directory contains only
+`inventory.json` and `approval.json`; it does not seed `rbac:groups:read` or
+`rbac:groups:write`. A fixture role using the table therefore fails with
+`PermissionsNotFoundError` in the local stack checked on 2026-10-01. The
+checked-in Inventory schema copy at `.local-deps/inventory-api/deploy/schema.zed`
+does not show those relations, while the **running** SpiceDB schema checked on
+that date did contain `rbac_groups_read` and `t_rbac_groups_read`. Inspect the
+active schema rather than assuming the checked-in copy is what the stack loaded.
+`inventory:groups:read` is a different permission and does not authorize
+`GroupV2KesselAccessPermission`.
+
+Before applying a Group V2 fixture, check the active permission catalog and
+Kessel schema. If either mapping is absent, make the validator fail with that
+specific prerequisite error and record the missing RBAC/Kessel contract in the
+report. Keep the generated script complete so the run captures the real
+dependency failure and can diagnose or repair it. Do not seed a permission by
+direct SQL or create a Kessel relationship with `zed relationship touch`.
+For example, a read-only catalog check in the RBAC container is:
+
+```bash
+podman exec full-kessel-rbac-server-1 python /opt/rbac/rbac/manage.py shell -c \
+  'from management.models import Permission; print(Permission.objects.filter(permission="rbac:groups:read").exists())'
+```
+
+Check the active Kessel schema with `zed schema read` using the local stack's
+documented endpoint and token. Require the `rbac_groups_read` permission on
+the tenant resource and its corresponding role relation; a source file alone
+does not prove that the running SpiceDB instance loaded the schema. The
+validator should print which prerequisite is missing and exit nonzero before
+it creates temporary users.
+
+Once both catalog and schema entries exist, the fixture permission's V2 string
+is `rbac_groups_read` or `rbac_groups_write`, matching the relation constants
+checked by that class.
 The write grant is separate; do not include it in a read-only validator just
 to make setup pass. This class has no org-admin bypass, so the admin metadata
 does not replace the required relation.
 
-For example, a non-admin user who should list groups needs this role and
-tenant binding in the fixture (use a unique role name for each validation):
+After the catalog and schema prerequisites are supplied, a non-admin user who
+should list groups needs this role and tenant binding in the fixture (use a
+unique role name for each validation):
 
 ```yaml
 version: 1
