@@ -300,20 +300,99 @@ The fixture helper creates V2 custom roles with permission entries shaped like
 `application`, `resource_type`, and `operation`, then applies role bindings for
 users or groups. It does not create V1 legacy role-permission assignments.
 
-For Group V2, the access permission implementation uses the tenant resource.
-List and retrieve use `rbac_groups_read`; the fixture permission
-`application: rbac`, `resource_type: groups`, `operation: read` maps to that
-relation. Bind it to `type: tenant`, `id: current`. Write operations require a
-separately authorized write relation; do not give write permission to a
-read-only validation just to make setup pass. For a Group V2 write scenario,
-the corresponding fields are `application: rbac`, `resource_type: groups`,
-and `operation: write`; only include this grant when the scenario exercises a
-write action.
+### Convert a permission class into fixture access
 
-For another V2 endpoint, inspect its access permission class and use the exact
-application, resource type, operation, and resource scope it checks. A role
-bound to a workspace does not automatically grant access to a tenant resource
-or vice versa.
+Follow this trace for the exact route and action under test. Do not infer a
+fixture permission from the endpoint name or split a relation string on
+underscores: relation names can be aliases, and permission components can
+contain underscores.
+
+1. Find the registered view and action in the URL router and viewset. Read its
+   `permission_classes` and any method or action-specific permission logic.
+   Account for every class in the tuple: all of them must allow the request.
+2. Trace `has_permission` and, when present, `has_object_permission` for the
+   request method and action. Record the actual outcome for org admins, V1
+   legacy users, and V2 users; note feature-flag branches, bypasses, and
+   fail-closed defaults. A permission class may require more than one grant.
+3. Record the exact authorization check: relation or legacy permission,
+   resource type and resource ID, and the principal used by the check. Follow
+   helper calls until those values are resolved; do not stop at the view's
+   imported permission class name.
+4. For a V2 custom role, find the corresponding permission definition and
+   conversion in the current RBAC source. Fixture role entries use
+   `application`, `resource_type`, and `operation`. `PermissionValue.from_v2_dict`
+   maps `operation` to the stored verb, and `Permission.v2_string()` turns the
+   stored permission into the relation name used in V2 role relationships.
+   `RoleV2Service._validate_and_resolve_permissions()` resolves the triple
+   against permissions already defined in RBAC; an invented triple will not
+   create a usable permission. Confirm the exact triple against the class,
+   permission definitions, role seeds/configuration, or an existing known-good
+   role. Do not reverse-engineer an arbitrary relation name by splitting it.
+5. Bind that role to the test user at the resource the permission class checks.
+   A correct permission on the wrong resource scope does not authorize the
+   request. Keep denied and cross-tenant users without a matching binding.
+6. Apply the fixture with `apply-rbac-users-config.sh`, check its org and
+   binding counts, and wait for or verify the effective relationship before
+   treating an expected-success request as an authorization test. A successful
+   fixture command alone does not prove that Kessel can authorize the request.
+
+Record the derivation in the generated scenario, for example:
+`GroupV2KesselAccessPermission._get_relation(list, GET)` requires
+`rbac_groups_read` on the tenant; the exact role permission is
+`rbac:groups:read`; bind that role to the test user on the same tenant.
+
+### Verified Group V2 mapping
+
+The current `rbac/management/permissions/group_v2_access.py` implementation
+defines `RESOURCE_TYPE = "tenant"` and checks the request tenant's
+`tenant_resource_id()`. Its action/method selection is:
+
+| Group V2 action and method | Required Kessel relation | Exact fixture role permission | Binding resource |
+| --- | --- | --- | --- |
+| `list` or `retrieve` | `rbac_groups_read` | `application: rbac`, `resource_type: groups`, `operation: read` | `type: tenant`, `id: current` |
+| `principals` with `GET`, `HEAD`, or `OPTIONS` | `rbac_groups_read` | `application: rbac`, `resource_type: groups`, `operation: read` | `type: tenant`, `id: current` |
+| All other actions or methods, including group or membership writes | `rbac_groups_write` | `application: rbac`, `resource_type: groups`, `operation: write` | `type: tenant`, `id: current` |
+
+The fixture permission's V2 string is `rbac_groups_read` or
+`rbac_groups_write`, matching the relation constants checked by that class.
+The write grant is separate; do not include it in a read-only validator just
+to make setup pass. This class has no org-admin bypass, so the admin metadata
+does not replace the required relation.
+
+For example, a non-admin user who should list groups needs this role and
+tenant binding in the fixture (use a unique role name for each validation):
+
+```yaml
+version: 1
+tenants:
+  - org_id: local-validation-identities
+    account_id: "10001"
+    bootstrap: true
+    temporary: true
+    users:
+      - username: local-v2-non-admin-example
+        user_id: local-v2-non-admin-example
+        admin: false
+        role_bindings:
+          - role: local-v2-groups-read-example
+            resource:
+              type: tenant
+              id: current
+    roles:
+      - name: local-v2-groups-read-example
+        description: Read-only access for the Group V2 validation
+        permissions:
+          - application: rbac
+            resource_type: groups
+            operation: read
+```
+
+For another V2 endpoint, apply the same trace and derive its exact permission
+and resource scope from the class and the code that translates that permission
+into a V2 role relationship. A role bound to a workspace does not automatically
+grant access to a tenant resource or vice versa. If the current source and
+fixture contract do not establish the mapping, report the specific missing
+symbol or conversion; do not guess.
 
 For a V1 non-admin endpoint that uses legacy RBAC permissions, configure those
 permissions through the endpoint's supported V1 API or existing seed/test
