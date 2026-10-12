@@ -233,7 +233,7 @@ class ITSSOTokenValidator(TokenValidator):
         )
         for candidate in candidates:
             if isinstance(candidate, str) and candidate.strip():
-                return bearer_token, candidate
+                return bearer_token, candidate.strip()
         return bearer_token, None
 
     def _parse_claims(self, user: User, jwt: Token) -> None:
