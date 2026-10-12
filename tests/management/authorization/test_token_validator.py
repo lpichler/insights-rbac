@@ -882,6 +882,7 @@ class TokenValidatorTests(IdentityRequest):
 
         for description, org_claims, expected_org_id in [
             ("top-level org_id only, the real SSO user token shape", {"org_id": "org1"}, "org1"),
+            ("selected org_id is trimmed", {"org_id": " org1 "}, "org1"),
             ("both claims present, top-level wins", {"org_id": "org1", "organization": {"id": "org2"}}, "org1"),
             ("blank org_id falls back to the nested claim", {"org_id": "", "organization": {"id": "org2"}}, "org2"),
             ("rh-org-id only, the real SSO service account token shape", {"rh-org-id": "org3"}, "org3"),
