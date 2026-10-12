@@ -46,8 +46,8 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
-# Make the API request
-curl -H "Authorization: Bearer $TOKEN" \
+# Make the API request (--fail returns nonzero on HTTP 4xx/5xx)
+curl --fail -H "Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -d "{\"query\": \"$SQL_QUERY\"}" \
      "$API_URL" # | jq '.result[] | @csv'

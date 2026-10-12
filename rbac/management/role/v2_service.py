@@ -27,6 +27,15 @@ from django.db import IntegrityError
 from django.db.models import Q, QuerySet
 from management.atomic_transactions import atomic
 from management.exceptions import NotFoundError, RequiredFieldError
+from management.inventory_replicator.inventory_replicator import (
+    InventoryReplicator,
+    PartitionKey,
+    ReplicationEvent,
+    ReplicationEventType,
+)
+from management.inventory_replicator.noop_replicator import NoopReplicator
+from management.inventory_replicator.outbox_replicator import OutboxReplicator
+from management.inventory_replicator.types import RelationTuple
 from management.permission.exceptions import InvalidPermissionDataError
 from management.permission.model import PermissionValue
 from management.permission.scope_service import (
@@ -39,15 +48,6 @@ from management.permission.scope_service import (
     scopes_for_resource_type,
 )
 from management.permission.service import PermissionService
-from management.relation_replicator.noop_replicator import NoopReplicator
-from management.relation_replicator.outbox_replicator import OutboxReplicator
-from management.relation_replicator.relation_replicator import (
-    PartitionKey,
-    RelationReplicator,
-    ReplicationEvent,
-    ReplicationEventType,
-)
-from management.relation_replicator.types import RelationTuple
 from management.role.v2_exceptions import (
     CustomRoleRequiredError,
     InvalidRolePermissionsError,
@@ -83,7 +83,7 @@ class RoleV2Service:
     def __init__(
         self,
         tenant: Tenant | None = None,
-        replicator: RelationReplicator | None = None,
+        replicator: InventoryReplicator | None = None,
     ):
         """Initialize the service."""
         self.tenant = tenant
@@ -343,7 +343,14 @@ class RoleV2Service:
 
         if Scope.DEFAULT not in matching_scopes:
             matching_ids = permission_scope_cache.ids_for_scopes(matching_scopes)
-            queryset = queryset.filter(permissions__id__in=matching_ids).distinct()
+            concrete_ids = permission_scope_cache.ids_for_scopes(set(CONCRETE_SCOPES))
+            all_scope_ids = permission_scope_cache.ids_for_scopes({Scope.ALL})
+            all_scope_only_roles = (
+                queryset.filter(permissions__id__in=all_scope_ids)
+                .exclude(permissions__id__in=concrete_ids)
+                .values_list("pk", flat=True)
+            )
+            queryset = queryset.filter(Q(permissions__id__in=matching_ids) | Q(pk__in=all_scope_only_roles)).distinct()
 
         if higher_non_matching:
             higher_ids = permission_scope_cache.ids_for_scopes(higher_non_matching)

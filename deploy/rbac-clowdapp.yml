@@ -1003,44 +1003,48 @@ objects:
         image: ${POSTGRES_EXPORTER_IMAGE}
         args:
         - "--extend.query-path=/etc/config.yaml"
+        - "--config.file="
+        ports:
+        - name: metrics
+          containerPort: 9187
         env:
         - name: DATABASE_HOST
           valueFrom:
             secretKeyRef:
-              key: host
+              key: db.host
               name: db-clone
               optional: false
         - name: DATABASE_PORT
           valueFrom:
             secretKeyRef:
-              key: port
+              key: db.port
               name: db-clone
               optional: false
         - name: DATABASE_NAME
           valueFrom:
             secretKeyRef:
-              key: db
+              key: db.name
               name: db-clone
               optional: false
         - name: DATA_SOURCE_URI
-          value: "$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)?sslmode=${PGSSLMODE}"
+          value: "$(DATABASE_HOST):$(DATABASE_PORT)/$(DATABASE_NAME)?sslmode=${POSTGRES_EXPORTER_SSLMODE}"
         - name: DATA_SOURCE_USER
           valueFrom:
             secretKeyRef:
-              key: user
+              key: db.user
               name: db-clone
               optional: false
         - name: DATA_SOURCE_PASS
           valueFrom:
             secretKeyRef:
-              key: pass
+              key: db.password
               name: db-clone
               optional: false
         volumes:
         - name: postgres-exporter-queries
           configMap:
             name: rbac-postgres-exporter-queries
-            optional: true
+            optional: false
         volumeMounts:
         - name: postgres-exporter-queries
           mountPath: /etc/config.yaml
@@ -1646,21 +1650,6 @@ objects:
     resources:
       requests:
         storage: 2Gi
-
-- apiVersion: v1
-  kind: Service
-  metadata:
-    name: rbac-postgres-exporter
-    labels:
-      app: rbac-postgres-exporter
-  spec:
-    ports:
-    - name: 9187-tcp
-      port: 9187
-      targetPort: 9187
-    selector:
-      pod: rbac-postgres-exporter
-    type: ClusterIP
 parameters:
 - description: Image name
   name: IMAGE
@@ -1750,6 +1739,10 @@ parameters:
   displayName: Postgres SSL mode
   name: PGSSLMODE
   value: prefer
+- description: 'SSL mode for the postgres-exporter DSN (lib/pq only supports disable, require, verify-ca, verify-full -- not "prefer")'
+  displayName: Postgres exporter SSL mode
+  name: POSTGRES_EXPORTER_SSLMODE
+  value: require
 - description: Python boolean value to enable/disable permission seeding on app boot
   name: PERMISSION_SEEDING_ENABLED
   required: true
@@ -2189,16 +2182,16 @@ parameters:
   value: '50'
 - name: MIN_POSTGRES_EXPORTER_REPLICAS
   description: Minimum replicas for postgres-exporter
-  value: '0'
+  value: '1'
 - name: POSTGRES_EXPORTER_IMAGE
   description: Postgres exporter image
   value: quay.io/prometheuscommunity/postgres-exporter:v0.19.1
 - name: POSTGRES_EXPORTER_CPU_REQUEST
   description: Postgres exporter CPU request
-  value: 1m
+  value: 10m
 - name: POSTGRES_EXPORTER_MEMORY_REQUEST
   description: Postgres exporter memory request
-  value: 16Mi
+  value: 32Mi
 - name: POSTGRES_EXPORTER_CPU_LIMIT
   description: Postgres exporter CPU limit
   value: 100m

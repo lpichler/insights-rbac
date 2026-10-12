@@ -1,5 +1,5 @@
 #
-# Copyright 2024 Red Hat, Inc.
+# Copyright 2026 Red Hat, Inc.
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -14,15 +14,22 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 #
+"""Logging helpers for tests."""
 
-"""A RelationReplicator which does nothing."""
+import logging
+from contextlib import contextmanager
 
-from management.relation_replicator.relation_replicator import RelationReplicator, ReplicationEvent
 
+@contextmanager
+def enable_logging():
+    """Re-enable logging temporarily so that assertLogs/assertNoLogs work.
 
-class NoopReplicator(RelationReplicator):
-    """Noop replicator."""
-
-    def replicate(self, event: ReplicationEvent):
-        """Noop."""
-        pass
+    Django's parallel test runner calls logging.disable(CRITICAL), which suppresses the records
+    assertLogs and assertNoLogs rely on. This restores logging within its scope and resets afterwards.
+    """
+    prior_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    try:
+        yield
+    finally:
+        logging.disable(prior_disable)
