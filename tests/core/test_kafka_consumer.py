@@ -1811,8 +1811,6 @@ class FencingTokenRebalanceTests(TestCase):
         thread via kafka.future.Future. This test exercises that code path,
         mirroring the pattern used for on_partitions_assigned tests.
         """
-        from core.kafka_consumer import RebalanceListener
-
         # Set up lock state
         self.consumer.lock_id = "test-consumer-group/0"
         self.consumer.lock_token = "test-token-12345"

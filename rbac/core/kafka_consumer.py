@@ -538,6 +538,12 @@ class OffsetManager:
     def commit(self) -> tuple[bool, int]:
         """Commit all stored offsets to Kafka (thread-safe).
 
+        Safe to call from any thread: ``consumer.commit()`` internally calls
+        ``net.run()`` which marshals work onto the IO thread when the caller
+        is a different thread (kafka-python selector.py L357-362).
+        ``consumer.assignment()`` is ``@synchronized`` and reads local state
+        only (subscription_state.py L349).
+
         Returns:
             tuple[bool, int]: (success, count) where success is True if commit succeeded,
                               and count is the number of offsets committed (0 if none)
@@ -686,6 +692,25 @@ class RebalanceListener(AsyncConsumerRebalanceListener):
 
         Runs the blocking offset commit in a worker thread to avoid
         blocking the consumer IO thread.
+
+        Thread-safety of calling consumer.commit()/assignment() from the
+        worker thread (verified against kafka-python 3.0.11 source):
+
+        * ``assignment()`` delegates to ``SubscriptionState.assigned_partitions()``
+          which is ``@synchronized`` (acquires an RLock) and returns a copy of
+          local state -- no network IO involved.  (subscription_state.py L349)
+
+        * ``commit()`` calls ``ConsumerCoordinator.commit_offsets_sync()`` which
+          uses ``self._net.run(coroutine)`` to marshal the actual network work
+          onto the IO thread.  When the caller is **not** the IO thread,
+          ``NetworkSelector.run()`` enqueues the coroutine via ``call_soon()``,
+          wakes the selector, and blocks on a ``threading.Event`` until the IO
+          thread completes it.  Its docstring states: "Safe to call concurrently
+          from multiple caller threads."  (selector.py L357-362)
+
+        * No deadlock: this async callback ``await``\s a KafkaFuture (yielded to
+          the selector), so the IO thread's poll loop keeps running and can pick
+          up the enqueued commit task from the worker thread.
 
         Args:
             revoked: List of TopicPartition objects being revoked
