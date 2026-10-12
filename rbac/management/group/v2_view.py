@@ -42,6 +42,7 @@ from management.group.v2_serializer import (
     GroupV2ResponseSerializer,
 )
 from management.group.v2_service import GroupV2Service
+from management.inventory_replicator.outbox_replicator import OutboxReplicator
 from management.notifications.notification_handlers import group_obj_change_notification_handler
 from management.permissions.group_v2_access import GroupV2KesselAccessPermission
 from management.permissions.v2_edit_api_access import V2WriteRequiresWorkspacesEnabled
@@ -51,7 +52,6 @@ from management.principal.model import Principal, SERVICE_ACCOUNT_USERNAME_FORMA
 from management.principal.proxy import PrincipalProxy, external_principal_to_user
 from management.principal.unexpected_status_code_from_it import UnexpectedStatusCodeFromITError
 from management.principal.v2_serializer import PrincipalV2OutputSerializer
-from management.relation_replicator.outbox_replicator import OutboxReplicator
 from management.tenant_service import get_tenant_bootstrap_service
 from management.utils import v2response_error_from_errors
 from management.v2_mixins import AtomicOperationsMixin
@@ -88,8 +88,15 @@ class GroupV2ViewSet(AtomicOperationsMixin, BaseV2ViewSet):
     http_method_names = ["get", "post", "put", "delete", "head", "options"]
 
     def get_queryset(self):
-        """Return annotated groups for the requesting tenant."""
-        return GroupV2Service(tenant=self.request.tenant).queryset()
+        """Return annotated groups for the requesting tenant.
+
+        Retrieve also resolves the public default groups the tenant has no own copy of (V1 parity). Every other
+        detail action (update, destroy, principals) stays tenant-only, so those public groups remain read-only.
+        """
+        service = GroupV2Service(tenant=self.request.tenant)
+        if self.action == "retrieve":
+            return service.queryset(include_public_defaults=True, is_org_admin=bool(self.request.user.admin))
+        return service.queryset()
 
     def get_serializer_class(self):
         """Return appropriate serializer based on action."""
@@ -103,7 +110,10 @@ class GroupV2ViewSet(AtomicOperationsMixin, BaseV2ViewSet):
         input_serializer.is_valid(raise_exception=True)
 
         queryset = GroupV2Service(tenant=request.tenant).list(
-            input_serializer.validated_data, requester_username=request.user.username
+            input_serializer.validated_data,
+            requester_username=request.user.username,
+            is_org_admin=bool(request.user.admin),
+            self_access_only=getattr(request, "group_self_access_only", False),
         )
 
         page = self.paginate_queryset(queryset)
@@ -320,10 +330,18 @@ class GroupV2ViewSet(AtomicOperationsMixin, BaseV2ViewSet):
         # A bearer token scoped to a different organization than the tenant resolved from the identity
         # header must not be used to look up or create service-account principals in this tenant. Report
         # it the same way as an unknown client ID, to avoid leaking why validation failed. A missing
-        # "organization.id" claim on a real, validated token is treated as untrusted (fails closed) rather
-        # than skipped -- the "id is None means skip" behavior is reserved strictly for the
+        # organization ID claim on a real, validated token is treated as untrusted (fails closed) rather
+        # than skipped -- the "org ID is None means skip" behavior is reserved strictly for the
         # IT_BYPASS_TOKEN_VALIDATION path, which returns the None sentinel without validating anything.
+        # The response hides the reason, so log it (without the token or the client IDs) to keep the
+        # failure diagnosable.
         if not settings.IT_BYPASS_TOKEN_VALIDATION and token_org_id != request.tenant.org_id:
+            logger.warning(
+                "Rejecting service account validation: bearer token organization does not match the tenant"
+                " resolved from the identity header. tenant_org_id=%s token_org_id=%s",
+                request.tenant.org_id,
+                token_org_id,
+            )
             return None, set(client_ids)
 
         # Development and testing environments may skip IT, in which case the local backfill still runs.

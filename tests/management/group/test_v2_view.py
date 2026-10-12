@@ -17,7 +17,9 @@
 """Test the GroupV2ViewSet."""
 
 import uuid
+from base64 import b64encode
 from importlib import reload
+from json import dumps as json_dumps
 from unittest.mock import patch
 from urllib.parse import urlencode
 
@@ -34,20 +36,24 @@ from management.authorization.invalid_token import InvalidTokenError
 from management.authorization.missing_authorization import MissingAuthorizationError
 from management.authorization.unable_meet_prerequisites import UnableMeetPrerequisitesError
 from management.group.model import Group
-from management.group.relation_api_dual_write_group_handler import RelationApiDualWriteGroupHandler
+from management.group.inventory_api_dual_write_group_handler import InventoryApiDualWriteGroupHandler
 from management.group.v2_service import GroupV2Service
 from management.permissions.group_v2_access import GroupV2KesselAccessPermission
 from management.policy.model import Policy
 from management.principal.model import Principal
 from management.principal.unexpected_status_code_from_it import UnexpectedStatusCodeFromITError
-from management.relation_replicator.relation_replicator import ReplicationEventType
+from management.inventory_replicator.inventory_replicator import ReplicationEventType
 from management.role.model import Role
 from management.role.v2_model import CustomRoleV2
 from management.role_binding.model import RoleBinding, RoleBindingGroup
 from management.tenant_mapping.v2_activation import assert_v1_write_allowed, is_v2_opted_in, set_v2_opt_in_state
 from rbac import urls
 from tests.identity_request import IdentityRequest
+from tests.logging_util import enable_logging
 from tests.v2_util import bootstrap_tenant_for_v2_test
+
+from api.common import RH_IDENTITY_HEADER
+from api.models import Tenant
 
 ACCESS_CHECK_TARGET = "management.permissions.group_v2_access.WorkspaceInventoryAccessChecker.check_resource_access"
 TOKEN_VALIDATION_TARGET = "management.authorization.token_validator.ITSSOTokenValidator.validate_token_and_org_id"
@@ -75,7 +81,9 @@ class GroupV2ViewTestBase(IdentityRequest):
             )
         )
         self.mock_check_access = self.enterContext(patch(ACCESS_CHECK_TARGET, return_value=True))
-        self.mock_dual_write = self.enterContext(patch("management.group.v2_service.RelationApiDualWriteGroupHandler"))
+        self.mock_dual_write = self.enterContext(
+            patch("management.group.v2_service.InventoryApiDualWriteGroupHandler")
+        )
 
         self.user_1 = Principal.objects.create(username="user_1", tenant=self.tenant)
         self.user_2 = Principal.objects.create(username="user_2", tenant=self.tenant)
@@ -605,6 +613,140 @@ class GroupV2ListAdvancedFiltersViewTest(GroupV2ViewTestBase):
                 self.assertNotIn("alpha-other", self._names(response))
 
 
+class GroupV2ListSelfAccessViewTest(GroupV2ViewTestBase):
+    """Tests for the self-access exception when the requester lacks rbac_groups_read."""
+
+    def setUp(self):
+        """Deny rbac_groups_read for all tests in this class; self-access must still work."""
+        super().setUp()
+        self.mock_check_access.return_value = False
+        self.requester = Principal.objects.create(username=self.user_data["username"], tenant=self.tenant)
+
+    def test_scope_principal_allowed_without_read_permission(self):
+        """scope=principal grants the self-access exception and returns only the requester's groups."""
+        self.group_b.principals.add(self.requester)
+
+        response = self._list(scope="principal")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), ["beta"])
+
+    def test_exact_username_match_allowed_without_read_permission(self):
+        """username=<requester's own username> grants the self-access exception."""
+        self.group_b.principals.add(self.requester)
+
+        response = self._list(username=self.user_data["username"])
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), ["beta"])
+
+    def test_self_access_with_no_memberships_returns_empty_list(self):
+        """A requester who belongs to no groups gets 200 with an empty list, not an error."""
+        response = self._list(scope="principal")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), [])
+
+    def test_username_case_mismatch_denied(self):
+        """A differently-cased username does not qualify for self-access (V1 parity: case-sensitive)."""
+        response = self._list(username=self.user_data["username"].upper())
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_username_wildcard_matching_self_as_substring_denied(self):
+        """A wildcard pattern that happens to match the requester's username as a substring is still denied."""
+        response = self._list(username=f"{self.user_data['username']}*")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_username_substring_of_self_denied(self):
+        """A substring of the requester's own username (not an exact match) is still denied."""
+        response = self._list(username=self.user_data["username"][:-1])
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_other_username_denied(self):
+        """A username that is not the requester's own does not qualify for self-access."""
+        response = self._list(username="user_1")
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_self_access_ignores_other_filter_params(self):
+        """Once self-access is granted, extra filter params (e.g. name) do not narrow the result further."""
+        self.group_b.principals.add(self.requester)
+
+        response = self._list(username=self.user_data["username"], name="does-not-match-anything")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), ["beta"])
+
+    def test_exclude_username_of_self_alone_denied(self):
+        """exclude_username=<self> alone does not qualify for self-access.
+
+        Excluding the requester's own username would surface groups the requester does NOT belong
+        to -- the opposite of "list my own groups" -- so it is deliberately not one of the two
+        self-access query shapes (unlike username=<self>, which is). username and exclude_username
+        are mutually exclusive at the input-serializer level, so this is the only way
+        exclude_username=<self> can ever reach the permission check.
+        """
+        response = self._list(exclude_username=self.user_data["username"])
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_username_and_exclude_username_of_self_together_rejected(self):
+        """username=<self> combined with exclude_username=<self> still 400s, not 200.
+
+        The permission layer only inspects username when deciding self-access, so it grants the
+        exception here (username == requester's own username). But input_serializer.is_valid() in
+        GroupV2ViewSet.list() runs before self_access_only is ever consulted by the service, and its
+        general username/exclude_username mutual-exclusivity check (see
+        test_username_and_exclude_username_are_mutually_exclusive) fires unconditionally. So this
+        combination is rejected with the same 400 as any other username+exclude_username pairing --
+        self_access_only never gets a chance to ignore exclude_username for this request.
+        """
+        response = self._list(username=self.user_data["username"], exclude_username=self.user_data["username"])
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        error = response.json()["errors"][0]
+        self.assertEqual(error["field"], "exclude_username")
+        self.assertEqual(error["message"], "username and exclude_username are mutually exclusive.")
+
+    @patch("rbac.middleware.backfill_remote_principal")
+    def test_self_access_does_not_leak_groups_of_case_distinct_principal(self, _mock_backfill):
+        """A legacy uppercase principal with a case-distinct username must not leak its groups.
+
+        Principal.save() lowercases on save but has no backfill migration, so legacy rows like
+        "Alice" can coexist with "alice" in the same tenant. The self-access filter must use a
+        case-sensitive match so "alice" never sees groups belonging to "Alice".
+
+        The middleware's backfill_remote_principal also uses username__iexact and would crash with
+        MultipleObjectsReturned when both case variants exist, so it is mocked here to isolate
+        the service-layer fix under test.
+        """
+        legacy_username = self.user_data["username"].upper()
+        # bulk_create bypasses Principal.save() (which lowercases), simulating a pre-normalization row.
+        legacy_principal = Principal(username=legacy_username, tenant=self.tenant, type=Principal.Types.USER)
+        Principal.objects.bulk_create([legacy_principal])
+        legacy_group = Group.objects.create(name="legacy-only", tenant=self.tenant)
+        legacy_group.principals.add(legacy_principal)
+
+        # The requester (lowercase) also belongs to group_b.
+        self.group_b.principals.add(self.requester)
+
+        response = self._list(scope="principal")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = self._names(response)
+        self.assertIn("beta", names)
+        self.assertNotIn("legacy-only", names)
+
+    def test_self_access_not_granted_for_retrieve(self):
+        """The self-access exception is scoped to list only; retrieve still requires rbac_groups_read."""
+        response = self.client.get(self._detail_url(self.group_b.uuid), **self.headers)
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+
 class GroupV2RetrieveViewTest(GroupV2ViewTestBase):
     """Tests for retrieving a group."""
 
@@ -644,6 +786,246 @@ class GroupV2RetrieveViewTest(GroupV2ViewTestBase):
         response = self.client.get(url, **self.headers)
 
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class GroupV2PublicDefaultGroupsViewTest(GroupV2ViewTestBase):
+    """Tests for the public tenant's default groups falling back into list/retrieve (V1 parity)."""
+
+    def setUp(self):
+        """Create the public tenant's platform and admin default groups, and non-admin request headers."""
+        super().setUp()
+        public_tenant = Tenant.objects.get(tenant_name=Tenant.PUBLIC_TENANT_NAME)
+        self.public_platform_default = Group.objects.create(
+            name="default access", platform_default=True, system=True, tenant=public_tenant
+        )
+        self.public_admin_default = Group.objects.create(
+            name="default admin access", admin_default=True, system=True, tenant=public_tenant
+        )
+        non_admin_context = self._create_request_context(self.customer_data, self.user_data, is_org_admin=False)
+        self.non_admin_headers = non_admin_context["request"].META
+        self.missing_org_admin_flag_headers = self._headers_missing_org_admin_flag()
+
+    def _headers_missing_org_admin_flag(self):
+        """Build headers whose identity.user block omits the is_org_admin key entirely.
+
+        This mirrors real identity headers where 'is_org_admin' is absent (middleware.py reads it with
+        .get(), leaving request.user.admin as None), as opposed to _create_request_context which always
+        sets an explicit True/False value.
+        """
+        identity = self._build_identity(
+            self.user_data, self.customer_data.get("account_id"), self.customer_data.get("org_id"), True, False
+        )
+        del identity["identity"]["user"]["is_org_admin"]
+        mock_header = b64encode(json_dumps(identity).encode("utf-8"))
+        return {RH_IDENTITY_HEADER: mock_header}
+
+    def _retrieve(self, group_uuid, headers=None):
+        return self.client.get(self._detail_url(group_uuid), **(headers or self.headers))
+
+    def test_list_includes_public_default_groups_for_org_admin(self):
+        """Org admins see both public default groups alongside the tenant's own groups, with counts unaffected."""
+        self._bind(self.group_a, self.role_1)
+
+        response = self._list()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(self._names(response), ["alpha", "beta", "default access", "default admin access"])
+        by_name = {g["name"]: g for g in response.json()["data"]}
+        group = by_name["default access"]
+        self.assertEqual(group["uuid"], str(self.public_platform_default.uuid))
+        self.assertTrue(group["system"])
+        self.assertTrue(group["platform_default"])
+        self.assertFalse(group["admin_default"])
+        self.assertEqual(group["principal_count"], 0)
+        self.assertEqual(group["role_count"], 0)
+        # The OR-ed public-fallback filter must not alter the Count annotations for tenant-owned groups.
+        self.assertEqual(by_name["alpha"]["principal_count"], 2)
+        self.assertEqual(by_name["alpha"]["role_count"], 1)
+        self.assertEqual(by_name["beta"]["principal_count"], 1)
+        self.assertEqual(by_name["beta"]["role_count"], 0)
+
+    def test_list_excludes_public_admin_default_group_for_non_admin(self):
+        """Non-admins see the public platform default group but never the public admin default group."""
+        response = self.client.get(self._list_url(), **self.non_admin_headers)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(self._names(response), ["alpha", "beta", "default access"])
+
+    def test_list_and_retrieve_treat_missing_org_admin_flag_as_non_admin(self):
+        """A missing is_org_admin key (request.user.admin is None) must not 500 -- treat it as non-admin."""
+        headers = self.missing_org_admin_flag_headers
+
+        response = self.client.get(self._list_url(), **headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(self._names(response), ["alpha", "beta", "default access"])
+
+        response = self._retrieve(self.public_platform_default.uuid, headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self._retrieve(self.public_admin_default.uuid, headers)
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_list_tenant_default_group_replaces_public_one(self):
+        """A tenant-owned default group fully replaces its public counterpart; the other flag still falls back."""
+        Group.objects.create(name="Custom default group", platform_default=True, tenant=self.tenant)
+
+        response = self._list()
+        self.assertCountEqual(self._names(response), ["alpha", "beta", "Custom default group", "default admin access"])
+
+        Group.objects.create(name="Custom admin group", admin_default=True, tenant=self.tenant)
+
+        response = self._list()
+        self.assertCountEqual(self._names(response), ["alpha", "beta", "Custom default group", "Custom admin group"])
+
+    def test_list_exclude_username_omits_public_default_groups(self):
+        """exclude_username drops the public default groups regardless of admin status (V1 parity)."""
+        for headers in (self.headers, self.non_admin_headers):
+            with self.subTest(org_admin=headers is self.headers):
+                response = self.client.get(self._list_url(), {"exclude_username": "user_2"}, **headers)
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(self._names(response), ["beta"])
+
+    def test_list_flag_filters_surface_public_default_groups(self):
+        """platform_default/admin_default filters return the public group when the tenant has no own copy."""
+        cases = [
+            (self.headers, {"platform_default": "true"}, ["default access"]),
+            (self.headers, {"admin_default": "true"}, ["default admin access"]),
+            (self.headers, {"system": "true"}, ["default access", "default admin access"]),
+            (self.non_admin_headers, {"admin_default": "true"}, []),
+        ]
+        for headers, params, expected in cases:
+            with self.subTest(params=params, org_admin=headers is self.headers):
+                response = self.client.get(self._list_url(), params, **headers)
+
+                self.assertEqual(response.status_code, status.HTTP_200_OK)
+                self.assertEqual(self._names(response), expected)
+
+    def test_list_scope_principal_excludes_public_default_groups(self):
+        """scope=principal never matches public default groups, since they have no principal rows."""
+        requester = Principal.objects.create(username=self.user_data["username"], tenant=self.tenant)
+        self.group_b.principals.add(requester)
+
+        response = self._list(scope="principal")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), ["beta"])
+
+    def test_list_role_names_excludes_public_default_groups(self):
+        """role_names filters out public default groups, which have no role bindings, even when they'd fall back."""
+        self._bind(self.group_a, self.role_1)
+
+        response = self._list(role_names="role_1")
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._names(response), ["alpha"])
+
+    def test_list_orders_filters_and_paginates_tenant_and_public_groups_together(self):
+        """Ordering, name filtering and pagination treat tenant and public groups as one combined set."""
+        Group.objects.create(name="gamma", tenant=self.tenant)
+        Group.objects.create(name="access-team", tenant=self.tenant)
+
+        response = self._list(order_by="name")
+        self.assertEqual(
+            self._names(response),
+            ["access-team", "alpha", "beta", "default access", "default admin access", "gamma"],
+        )
+
+        response = self._list(order_by="-name")
+        self.assertEqual(
+            self._names(response),
+            ["gamma", "default admin access", "default access", "beta", "alpha", "access-team"],
+        )
+
+        response = self._list(name="access")
+        self.assertEqual(self._names(response), ["access-team", "default access", "default admin access"])
+
+        response = self._list(order_by="name", limit=2, offset=2)
+        self.assertEqual(self._names(response), ["beta", "default access"])
+        self.assertEqual(response.json()["meta"]["count"], 6)
+
+    def test_list_with_public_default_groups_is_a_single_query(self):
+        """The public default group fallback is a subquery, so listing still runs a single query."""
+        service = GroupV2Service(tenant=self.tenant)
+
+        with self.assertNumQueries(1):
+            groups = list(service.list({}, is_org_admin=True))
+
+        self.assertIn(self.public_admin_default, groups)
+
+    def test_retrieve_public_default_groups(self):
+        """Org admins can retrieve both public default groups; non-admins only the platform default group."""
+        cases = [
+            (self.headers, self.public_platform_default, status.HTTP_200_OK),
+            (self.headers, self.public_admin_default, status.HTTP_200_OK),
+            (self.non_admin_headers, self.public_platform_default, status.HTTP_200_OK),
+            (self.non_admin_headers, self.public_admin_default, status.HTTP_404_NOT_FOUND),
+        ]
+        for headers, group, expected_status in cases:
+            with self.subTest(group=group.name, org_admin=headers is self.headers):
+                response = self._retrieve(group.uuid, headers)
+
+                self.assertEqual(response.status_code, expected_status)
+                if expected_status == status.HTTP_200_OK:
+                    data = response.json()
+                    self.assertEqual(data["uuid"], str(group.uuid))
+                    self.assertEqual(data["principal_count"], 0)
+                    self.assertEqual(data["role_count"], 0)
+
+    def test_retrieve_public_default_group_replaced_by_tenant_copy_not_found(self):
+        """Once the tenant owns a default group, its public counterpart is no longer retrievable."""
+        for flag, public_group in (
+            ("platform_default", self.public_platform_default),
+            ("admin_default", self.public_admin_default),
+        ):
+            with self.subTest(flag=flag):
+                Group.objects.create(name=f"custom {flag}", tenant=self.tenant, **{flag: True})
+
+                response = self._retrieve(public_group.uuid)
+
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_write_actions_on_public_default_group_not_found(self):
+        """Update, delete and every principals action return 404 for public default groups and change nothing."""
+        self.enterContext(
+            patch(
+                "management.principal.proxy.PrincipalProxy.request_filtered_principals",
+                return_value={
+                    "status_code": 200,
+                    "data": [{"username": "user_1", "user_id": "u1", "org_id": self.tenant.org_id, "is_active": True}],
+                },
+            )
+        )
+        self.enterContext(patch("management.group.v2_view.backfill_remote_principals"))
+
+        for group in (self.public_platform_default, self.public_admin_default):
+            original_name = group.name
+            detail_url = self._detail_url(group.uuid)
+            principals_url = self._principals_url(group.uuid)
+            requests_by_action = {
+                "update": lambda: self.client.put(detail_url, {"name": "renamed"}, format="json", **self.headers),
+                "destroy": lambda: self.client.delete(detail_url, **self.headers),
+                "list principals": lambda: self.client.get(principals_url, **self.headers),
+                "add principals": lambda: self.client.post(
+                    principals_url, {"usernames": ["user_1"]}, format="json", **self.headers
+                ),
+                "remove principals": lambda: self.client.delete(principals_url + "?usernames=user_1", **self.headers),
+                "remove principal": lambda: self.client.delete(
+                    self._principal_detail_url(group.uuid, self.user_1.uuid), **self.headers
+                ),
+            }
+            for action_name, send in requests_by_action.items():
+                with self.subTest(group=group.name, action=action_name):
+                    response = send()
+
+                    self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+            group.refresh_from_db()
+            self.assertEqual(group.name, original_name)
+            self.assertFalse(group.principals.exists())
+
+        self.mock_dual_write.assert_not_called()
+        self.assertFalse(AuditLog.objects.filter(resource_type=AuditLog.GROUP_V2).exists())
 
 
 class GroupV2CreateViewTest(GroupV2ViewTestBase):
@@ -877,7 +1259,7 @@ class GroupV2DestroyViewTest(GroupV2ViewTestBase):
         self.assertEqual(log.action, AuditLog.DELETE)
         self.assertEqual(log.description, "Deleted V2 group: alpha")
 
-    @patch("management.relation_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
+    @patch("management.inventory_replicator.outbox_replicator.OutboxReplicator._save_replication_event")
     def test_delete_group_replicates_member_removal(self, mock_save_event):
         """Deleting a group writes removal of its user member tuples to the outbox."""
         self.user_1.user_id = "1111"
@@ -886,7 +1268,7 @@ class GroupV2DestroyViewTest(GroupV2ViewTestBase):
         self.user_2.save()
         group_uuid = str(self.group_a.uuid)
 
-        with patch("management.group.v2_service.RelationApiDualWriteGroupHandler", RelationApiDualWriteGroupHandler):
+        with patch("management.group.v2_service.InventoryApiDualWriteGroupHandler", InventoryApiDualWriteGroupHandler):
             response = self._delete(group_uuid)
 
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
@@ -1025,6 +1407,48 @@ class GroupV2ServiceQueryTest(GroupV2ViewTestBase):
             with self.subTest(requester_username=falsy_username):
                 queryset = service.list({"scope": GroupV2Service.PRINCIPAL_SCOPE}, requester_username=falsy_username)
                 self.assertEqual(list(queryset), [])
+
+    def test_self_access_only_restricts_to_requester_groups(self):
+        """self_access_only=True returns only the requester's own groups."""
+        service = GroupV2Service(tenant=self.tenant)
+
+        queryset = service.list({}, requester_username=self.user_1.username, self_access_only=True)
+
+        self.assertEqual([g.name for g in queryset], ["alpha", "beta"])
+
+    def test_self_access_only_ignores_other_filter_params(self):
+        """self_access_only=True ignores username/exclude_username/scope and any other filter param."""
+        service = GroupV2Service(tenant=self.tenant)
+
+        queryset = service.list(
+            {
+                "username": "user_2",
+                "exclude_username": self.user_1.username,
+                "scope": GroupV2Service.ORG_ID_SCOPE,
+                "name": "does-not-match",
+            },
+            requester_username=self.user_1.username,
+            self_access_only=True,
+        )
+
+        self.assertEqual([g.name for g in queryset], ["alpha", "beta"])
+
+    def test_self_access_only_with_falsy_requester_username_returns_nothing(self):
+        """self_access_only=True returns an empty queryset (not an error) when requester_username is falsy."""
+        service = GroupV2Service(tenant=self.tenant)
+
+        for falsy_username in (None, ""):
+            with self.subTest(requester_username=falsy_username):
+                queryset = service.list({}, requester_username=falsy_username, self_access_only=True)
+                self.assertEqual(list(queryset), [])
+
+    def test_self_access_only_honors_order_by(self):
+        """self_access_only=True still applies the requested order_by."""
+        service = GroupV2Service(tenant=self.tenant)
+
+        queryset = service.list({"order_by": "-name"}, requester_username=self.user_1.username, self_access_only=True)
+
+        self.assertEqual([g.name for g in queryset], ["beta", "alpha"])
 
 
 class GroupV2ListPrincipalsViewTest(GroupV2ViewTestBase):
@@ -1437,14 +1861,32 @@ class GroupV2AddPrincipalsViewTest(GroupV2ViewTestBase):
         self.mock_it.assert_called_once_with(bearer_token="bearer-token", client_ids=["xyz"])
 
     def test_add_service_account_token_org_mismatch_not_found(self):
-        """A bearer token scoped to a different org than the tenant is rejected like an unknown client ID."""
+        """A bearer token not scoped to the tenant's org is rejected like an unknown client ID."""
+        for description, token_org_id in [
+            ("a different org", "some-other-org"),
+            ("no org claim at all, which fails closed", None),
+        ]:
+            with self.subTest(description=description):
+                self.mock_validate_token.return_value = ("bearer-token", token_org_id)
+
+                response = self._add(self.group_b.uuid, {"service_accounts": ["xyz"]})
+
+                self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+                self.assertFalse(self.group_b.principals.filter(pk=self.service_account_2.pk).exists())
+                self.mock_it.assert_not_called()
+
+    def test_add_service_account_token_org_mismatch_logs_warning(self):
+        """The org mismatch that triggers the 404 is logged with both org IDs, and never with the token."""
         self.mock_validate_token.return_value = ("bearer-token", "some-other-org")
 
-        response = self._add(self.group_b.uuid, {"service_accounts": ["xyz"]})
+        with enable_logging(), self.assertLogs("management.group.v2_view", level="WARNING") as logs:
+            self._add(self.group_b.uuid, {"service_accounts": ["xyz"]})
 
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-        self.assertFalse(self.group_b.principals.filter(pk=self.service_account_2.pk).exists())
-        self.mock_it.assert_not_called()
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn(f"tenant_org_id={self.tenant.org_id}", logs.output[0])
+        self.assertIn("token_org_id=some-other-org", logs.output[0])
+        self.assertNotIn("bearer-token", logs.output[0])
+        self.assertNotIn("xyz", logs.output[0])
 
     def test_add_duplicate_service_accounts_validated_once(self):
         """Duplicate client IDs are deduplicated before the single IT call."""
@@ -1777,6 +2219,24 @@ class GroupV2AccessPermissionTest(IdentityRequest):
     def _request(self, method):
         return type("Request", (), {"method": method})()
 
+    def test_missing_tenant_denied_even_for_self_access_query(self):
+        """A request with no tenant is denied before the self-access exception is ever considered.
+
+        This must fail closed without ever calling Kessel: a tenant-less request has no org resource
+        ID to check access against, so has_permission must return False at that guard regardless of
+        whether the query params would otherwise qualify for the self-access exception.
+        """
+        permission = GroupV2KesselAccessPermission()
+        view = type("View", (), {"action": "list"})()
+        user = type("User", (), {"username": "alice", "org_id": "org-id"})()
+        request = type(
+            "Request",
+            (),
+            {"user": user, "query_params": {"scope": "principal"}, "tenant": None, "method": "GET", "path": "/x"},
+        )()
+
+        self.assertFalse(permission.has_permission(request, view))
+
     def test_relation_for_actions(self):
         """Write actions require rbac_groups_write, everything else rbac_groups_read."""
         permission = GroupV2KesselAccessPermission()
@@ -1800,6 +2260,52 @@ class GroupV2AccessPermissionTest(IdentityRequest):
             with self.subTest(action=action, method=method):
                 view = type("View", (), {"action": action})()
                 self.assertEqual(permission._get_relation(view, self._request(method)), relation)
+
+
+class GroupV2SelfAccessRequestTest(IdentityRequest):
+    """Tests for GroupV2KesselAccessPermission._is_self_access_request."""
+
+    def _self_access_request(self, username, query_params):
+        user = type("User", (), {"username": username})()
+        return type("Request", (), {"user": user, "query_params": query_params})()
+
+    def test_scope_principal_matches(self):
+        """scope=principal qualifies, regardless of the username param."""
+        permission = GroupV2KesselAccessPermission()
+        request = self._self_access_request("alice", {"scope": "principal"})
+        self.assertTrue(permission._is_self_access_request(request))
+
+    def test_exact_username_match(self):
+        """An exact, case-sensitive match of username to the requester's own username qualifies."""
+        permission = GroupV2KesselAccessPermission()
+        request = self._self_access_request("alice", {"username": "alice"})
+        self.assertTrue(permission._is_self_access_request(request))
+
+    def test_username_case_mismatch_does_not_match(self):
+        """A differently-cased username does not qualify (V1 parity: case-sensitive)."""
+        permission = GroupV2KesselAccessPermission()
+        request = self._self_access_request("alice", {"username": "Alice"})
+        self.assertFalse(permission._is_self_access_request(request))
+
+    def test_username_wildcard_substring_does_not_match(self):
+        """A wildcard/substring match on the requester's own username does not qualify."""
+        permission = GroupV2KesselAccessPermission()
+        request = self._self_access_request("alice", {"username": "alic*"})
+        self.assertFalse(permission._is_self_access_request(request))
+
+    def test_no_matching_query_params_does_not_match(self):
+        """Query params unrelated to the two self-access shapes do not qualify."""
+        permission = GroupV2KesselAccessPermission()
+        request = self._self_access_request("alice", {"name": "foo"})
+        self.assertFalse(permission._is_self_access_request(request))
+
+    def test_blank_requester_username_fails_closed(self):
+        """A request with no username on request.user (e.g. a service account identity) never qualifies."""
+        permission = GroupV2KesselAccessPermission()
+        for blank_username in (None, ""):
+            with self.subTest(username=blank_username):
+                request = self._self_access_request(blank_username, {"scope": "principal"})
+                self.assertFalse(permission._is_self_access_request(request))
 
 
 class GroupV2RouteGatingTest(IdentityRequest):

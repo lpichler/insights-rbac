@@ -23,8 +23,8 @@ from unittest.mock import patch
 from api.models import Tenant
 from django.test import TestCase, override_settings
 from management.principal.model import Principal as PrincipalModel
-from management.relation_replicator.outbox_replicator import OutboxReplicator
-from management.relation_replicator.relation_replicator import RelationReplicator, ReplicationEventType
+from management.inventory_replicator.outbox_replicator import OutboxReplicator
+from management.inventory_replicator.inventory_replicator import InventoryReplicator, ReplicationEventType
 from management.tenant_mapping.v2_activation import assert_v1_write_allowed, is_v2_write_activated
 from migration_tool.in_memory_tuples import (
     InMemoryRelationReplicator,
@@ -37,6 +37,7 @@ from migration_tool.in_memory_tuples import (
 )
 
 from management.models import Group, Permission, Principal, Role, Workspace
+from management.permission.scope_service import ImplicitResourceService, PermissionScopeCache
 from management.role.v2_model import PlatformRoleV2, RoleV2, SeededRoleV2
 from management.role.v2_service import RoleV2Service
 from management.exceptions import InvalidFieldError, NotFoundError, RequiredFieldError
@@ -50,7 +51,7 @@ from tests.identity_request import IdentityRequest
 from tests.v2_util import bootstrap_tenant_for_v2_test
 
 
-class _ReplicationTracker(RelationReplicator):
+class _ReplicationTracker(InventoryReplicator):
     """Records tuples added and removed by replication events for testing.
 
     Instead of merging into a single set (like InMemoryTuples), this tracks
@@ -2862,6 +2863,111 @@ class UpdateRoleBindingsForSubjectTests(_ReplicationAssertionsMixin, IdentityReq
             )
         self.assertEqual({r.uuid for r in result.roles}, {explicit_role.uuid})
 
+    def _all_scope_service_and_cache(self):
+        """Return (scope_service, scope_cache) configured with only an ALL-scoped permission."""
+        scope_service = ImplicitResourceService(
+            tenant_scope_permissions=[],
+            root_scope_permissions=[],
+            all_scope_permissions=["all_app:*:*"],
+        )
+        return scope_service, PermissionScopeCache(scope_service)
+
+    def _create_all_scope_role(self, name="all_scope_role"):
+        """Create and return a role with a single ALL-scoped permission."""
+        all_perm = Permission.objects.create(permission="all_app:resource:read", tenant=self.tenant)
+        role = RoleV2.objects.create(name=name, description="Scope-agnostic", tenant=self.tenant)
+        role.permissions.add(all_perm)
+        return role
+
+    def test_update_allows_all_scope_only_role_on_standard_workspace(self):
+        """Binding a role with only Scope.ALL permissions to a standard workspace should succeed."""
+        scope_service, scope_cache = self._all_scope_service_and_cache()
+        all_role = self._create_all_scope_role()
+
+        with (
+            patch("management.role_binding.service.default_implicit_resource_service", scope_service),
+            patch("management.role_binding.service.permission_scope_cache", scope_cache),
+        ):
+            result = self.service.update_role_bindings_for_subject(
+                resource_type="workspace",
+                resource_id=str(self.workspace.id),
+                subject_type="group",
+                subject_id=str(self.group.uuid),
+                role_ids=[str(all_role.uuid)],
+            )
+        self.assertEqual({r.uuid for r in result.roles}, {all_role.uuid})
+        binding = RoleBinding.objects.get(
+            role=all_role,
+            resource_type="workspace",
+            resource_id=str(self.workspace.id),
+            tenant=self.tenant,
+        )
+        self.assertTrue(RoleBindingGroup.objects.filter(binding=binding, group=self.group).exists())
+
+    def test_update_allows_all_scope_only_role_on_root_workspace(self):
+        """Binding a role with only Scope.ALL permissions to the root workspace should succeed."""
+        scope_service, _ = self._all_scope_service_and_cache()
+        all_role = self._create_all_scope_role()
+
+        with patch("management.role_binding.service.default_implicit_resource_service", scope_service):
+            result = self.service.update_role_bindings_for_subject(
+                resource_type="workspace",
+                resource_id=str(self.root_workspace.id),
+                subject_type="group",
+                subject_id=str(self.group.uuid),
+                role_ids=[str(all_role.uuid)],
+            )
+        self.assertEqual({r.uuid for r in result.roles}, {all_role.uuid})
+        binding = RoleBinding.objects.get(
+            role=all_role,
+            resource_type="workspace",
+            resource_id=str(self.root_workspace.id),
+            tenant=self.tenant,
+        )
+        self.assertTrue(RoleBindingGroup.objects.filter(binding=binding, group=self.group).exists())
+
+    def test_update_allows_all_scope_only_role_on_tenant(self):
+        """Binding a role with only Scope.ALL permissions to the tenant should succeed."""
+        scope_service, _ = self._all_scope_service_and_cache()
+        all_role = self._create_all_scope_role()
+
+        with patch("management.role_binding.service.default_implicit_resource_service", scope_service):
+            result = self.service.update_role_bindings_for_subject(
+                resource_type="tenant",
+                resource_id=self.tenant.tenant_resource_id(),
+                subject_type="group",
+                subject_id=str(self.group.uuid),
+                role_ids=[str(all_role.uuid)],
+            )
+        self.assertEqual({r.uuid for r in result.roles}, {all_role.uuid})
+        binding = RoleBinding.objects.get(
+            role=all_role,
+            resource_type="tenant",
+            resource_id=self.tenant.tenant_resource_id(),
+            tenant=self.tenant,
+        )
+        self.assertTrue(RoleBindingGroup.objects.filter(binding=binding, group=self.group).exists())
+
+    def test_update_rejects_permissionless_role_still_validated(self):
+        """A permissionless role (empty permissions) is not treated as all-scope-only and is still validated."""
+        scope_service, scope_cache = self._all_scope_service_and_cache()
+
+        permissionless_role = RoleV2.objects.create(name="no_perms", description="No permissions", tenant=self.tenant)
+
+        with (
+            patch("management.role_binding.service.default_implicit_resource_service", scope_service),
+            patch("management.role_binding.service.permission_scope_cache", scope_cache),
+        ):
+            with self.assertRaises(InvalidFieldError) as ctx:
+                self.service.update_role_bindings_for_subject(
+                    resource_type="workspace",
+                    resource_id=str(self.workspace.id),
+                    subject_type="group",
+                    subject_id=str(self.group.uuid),
+                    role_ids=[str(permissionless_role.uuid)],
+                )
+            self.assertIn("not scoped", str(ctx.exception))
+
 
 @override_settings(ATOMIC_RETRY_DISABLED=True)
 class ReplaceRoleBindingsTests(_ReplicationAssertionsMixin, IdentityRequest):
@@ -3445,7 +3551,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
 
     def setUp(self):
         super().setUp()
-        from management.group.relation_api_dual_write_group_handler import RelationApiDualWriteGroupHandler
+        from management.group.inventory_api_dual_write_group_handler import InventoryApiDualWriteGroupHandler
 
         bootstrap_result = bootstrap_tenant_for_v2_test(self.tenant)
         self.default_workspace = bootstrap_result.default_workspace
@@ -3489,7 +3595,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
         )
         self.tracker.clear()
 
-        self.RelationApiDualWriteGroupHandler = RelationApiDualWriteGroupHandler
+        self.InventoryApiDualWriteGroupHandler = InventoryApiDualWriteGroupHandler
 
     def tearDown(self):
         RoleBindingGroup.objects.all().delete()
@@ -3520,7 +3626,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
             expected_tuples_to_remove.add(binding.subject_tuple(self.group))
             expected_tuples_to_remove.update(binding.binding_tuples())
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3552,7 +3658,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
             role=self.role2, resource_id=str(self.workspace.id), tenant=self.tenant
         )
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3597,7 +3703,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
             role=self.role2, resource_id=str(self.workspace.id), tenant=self.tenant
         )
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3627,7 +3733,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
         )
         self.group.principals.add(principal)
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3650,7 +3756,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
         )
         lonely_group.principals.add(principal)
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             lonely_group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3687,7 +3793,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
         )
         self.assertEqual(len(all_bindings), 3)
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
@@ -3708,7 +3814,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
 
     def test_v2_path_platform_default_adds_default_binding(self):
         """Platform-default group triggers relations_to_add instead of member removals."""
-        from management.relation_replicator.types import ObjectReference, ObjectType, RelationTuple, SubjectReference
+        from management.inventory_replicator.types import ObjectReference, ObjectType, RelationTuple, SubjectReference
 
         sentinel_tuple = RelationTuple(
             resource=ObjectReference(type=ObjectType(namespace="rbac", name="sentinel"), id="default"),
@@ -3721,7 +3827,7 @@ class PrepareToDeleteGroupV2Tests(_ReplicationAssertionsMixin, IdentityRequest):
         self.group.platform_default = True
         self.group.save()
 
-        dual_write_handler = self.RelationApiDualWriteGroupHandler(
+        dual_write_handler = self.InventoryApiDualWriteGroupHandler(
             self.group,
             ReplicationEventType.DELETE_GROUP,
             replicator=self.tracker,
