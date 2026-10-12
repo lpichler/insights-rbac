@@ -708,7 +708,7 @@ class RebalanceListener(AsyncConsumerRebalanceListener):
           thread completes it.  Its docstring states: "Safe to call concurrently
           from multiple caller threads."  (selector.py L357-362)
 
-        * No deadlock: this async callback ``await``\s a KafkaFuture (yielded to
+        * No deadlock: this async callback awaits a KafkaFuture (yielded to
           the selector), so the IO thread's poll loop keeps running and can pick
           up the enqueued commit task from the worker thread.
 
