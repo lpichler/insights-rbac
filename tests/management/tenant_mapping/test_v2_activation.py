@@ -294,7 +294,7 @@ class V2OptInDefaultBindingsTests(TestCase):
         policy_service.platform_default_policy_uuid()
         policy_service.admin_default_policy_uuid()
 
-        Group.platform_default_set().public_tenant_only().delete()
+        Group.admin_default_set().public_tenant_only().delete()
 
         set_v2_opt_in_state(self.tenant, True)
 
