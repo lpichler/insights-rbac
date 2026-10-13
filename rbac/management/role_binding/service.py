@@ -830,9 +830,9 @@ class RoleBindingService:
             )
             try:
                 group = group_set.public_tenant_only().get()
-            except Group.DoesNotExist:
+            except Group.DoesNotExist as err:
                 logger.error(f"Public default group for {access_type} not found")
-                raise DefaultGroupNotAvailableError(f"Public default group not found for {access_type}")
+                raise DefaultGroupNotAvailableError(f"Public default group not found for {access_type}") from err
             self._public_default_groups[access_type] = group
 
         return group
