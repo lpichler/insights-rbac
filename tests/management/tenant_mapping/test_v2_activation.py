@@ -300,6 +300,7 @@ class V2OptInDefaultBindingsTests(TestCase):
 
         self.mapping.refresh_from_db()
         self.assertIsNotNone(self.mapping.v2_opted_in_at)
+        self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 0)
         self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), 0)
 
     def test_opt_in_already_v2_activated_tenant_does_not_create_bindings(self):
