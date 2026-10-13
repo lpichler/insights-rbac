@@ -114,6 +114,7 @@ class RoleBindingService:
         self._principal_source = principal_source
         self._allow_external_subjects = allow_external_subjects
         self._skip_scope_validation = skip_scope_validation
+        self._public_default_groups: dict[DefaultAccessType, Group] = {}
 
         if settings.REPLICATION_TO_RELATION_ENABLED:
             self._replicator = replicator if replicator is not None else OutboxReplicator()
@@ -730,12 +731,23 @@ class RoleBindingService:
             return
 
         # ADMIN bindings don't all exist - need to create missing bindings
-        # Now check for custom default group (only needed when creating)
-        has_custom_default_group = self._has_custom_default_group()
+        self.create_default_bindings(mapping)
 
-        # Create all missing bindings in a single transaction
+    def create_default_bindings(self, mapping: TenantMapping) -> None:
+        """Create any missing default role bindings for the tenant.
+
+        USER bindings are skipped when the tenant has a custom default group, since that
+        group replaces the platform default access.
+
+        Missing platform roles are logged and swallowed rather than raised, so that callers
+        (lazy creation on read, V2 opt-in) are not aborted by an incomplete seeding state.
+        The bindings are created later, once seeding has caught up.
+
+        Args:
+            mapping: The tenant mapping containing default UUIDs
+        """
         try:
-            self._create_all_default_bindings(mapping, skip_user_bindings=has_custom_default_group)
+            self._create_all_default_bindings(mapping, skip_user_bindings=self._has_custom_default_group())
         except DefaultGroupNotAvailableError:
             logger.warning(
                 f"Platform roles not available, skipping default binding creation for tenant {self.tenant.org_id}"
@@ -801,6 +813,30 @@ class RoleBindingService:
         if created_count > 0:
             logger.info(f"Created {created_count} default role bindings for tenant {self.tenant.org_id}")
 
+    def _public_default_group(self, access_type: DefaultAccessType) -> Group:
+        """Return the public tenant's default group for the given access type.
+
+        The group is looked up once per service instance, since the same two groups are
+        reused for every scope.
+
+        Raises:
+            DefaultGroupNotAvailableError: If seeding has not yet created the group.
+        """
+        group = self._public_default_groups.get(access_type)
+
+        if group is None:
+            group_set = (
+                Group.admin_default_set() if access_type == DefaultAccessType.ADMIN else Group.platform_default_set()
+            )
+            try:
+                group = group_set.public_tenant_only().get()
+            except Group.DoesNotExist:
+                logger.error(f"Public default group for {access_type} not found")
+                raise DefaultGroupNotAvailableError(f"Public default group not found for {access_type}")
+            self._public_default_groups[access_type] = group
+
+        return group
+
     def _create_single_default_binding(
         self,
         mapping: TenantMapping,
@@ -834,10 +870,7 @@ class RoleBindingService:
             raise DefaultGroupNotAvailableError(f"Platform role not found: {platform_role_uuid}")
 
         # Get the platform default group from public tenant (created by seed_group)
-        if access_type == DefaultAccessType.ADMIN:
-            group = Group.admin_default_set().public_tenant_only().get()
-        else:
-            group = Group.platform_default_set().public_tenant_only().get()
+        group = self._public_default_group(access_type)
 
         # Create the role binding
         binding, created = RoleBinding.objects.get_or_create(
