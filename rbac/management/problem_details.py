@@ -35,7 +35,7 @@ class ProblemType(enum.StrEnum):
     ALREADY_EXISTS = "http://project-kessel.org/problems/already-exists"
 
 
-PROBLEM_TYPE_TITLES = {
+PROBLEM_TYPE_TITLES: dict[str, str] = {
     ProblemType.INVALID_REQUEST: "The request payload contains invalid syntax.",
     ProblemType.UNAUTHENTICATED: "Authentication credentials were not provided or are invalid.",
     ProblemType.INSUFFICIENT_PERMISSION: "You do not have permission to perform this action.",
