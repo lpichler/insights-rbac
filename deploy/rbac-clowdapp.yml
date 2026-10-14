@@ -1004,6 +1004,7 @@ objects:
         args:
         - "--extend.query-path=/etc/config.yaml"
         - "--config.file="
+        - "--web.listen-address=:9000"
         ports:
         - name: metrics
           containerPort: 9187
