@@ -168,7 +168,7 @@ class RoleBindingService:
         subject_id = params.get("subject_id")
         exclude_sources = params.get("exclude_sources", ExcludeSources.NONE)
 
-        # Ensure default bindings exist (lazy creation)
+        # TODO(RHCLOUD-50167): Remove after backfilling existing opt-in tenants.
         self._ensure_default_bindings_exist()
 
         binding_uuids, exclude_direct = self._resolve_inherited_bindings(exclude_sources, resource_type, resource_id)
@@ -207,9 +207,7 @@ class RoleBindingService:
             Ordering is handled by V2CursorPagination.get_ordering() to ensure
             cursor pagination works correctly with the requested order_by parameter.
         """
-        # Ensure default bindings exist (lazy creation), same as the by-subject path.
-        # This recovers bindings when opt-in completed before required groups/roles
-        # were seeded and the initial creation was skipped.
+        # TODO(RHCLOUD-50167): Remove after backfilling existing opt-in tenants.
         self._ensure_default_bindings_exist()
 
         resource_id = params.get("resource_id")
@@ -711,12 +709,14 @@ class RoleBindingService:
     def _ensure_default_bindings_exist(self) -> None:
         """Lazily create default role bindings if they don't exist.
 
-        This method checks if the tenant has default role bindings by counting ADMIN bindings.
-        ADMIN bindings are always created (regardless of custom groups), so if all 3 ADMIN
-        bindings exist, we know default bindings have already been processed for this tenant.
+        .. deprecated::
+            Temporary self-healing for tenants that opted-in before required
+            groups/roles were fully seeded.  Remove this method **and both call
+            sites** once all existing opt-in tenants have been backfilled
+            (see RHCLOUD-50167).
 
-        If bindings don't exist, it creates all missing bindings in a single atomic transaction.
-        USER bindings are only created if the tenant has no custom default group.
+        Checks ADMIN binding count as a fast-path: if all 3 ADMIN bindings
+        exist, default bindings have already been processed for this tenant.
         """
         try:
             mapping = self.tenant.tenant_mapping
