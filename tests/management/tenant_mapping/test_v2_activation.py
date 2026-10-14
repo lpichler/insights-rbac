@@ -26,6 +26,7 @@ from management.group.platform import DefaultGroupNotAvailableError, GlobalPolic
 from management.permission.scope_service import CONCRETE_SCOPES
 from management.role.definer import seed_roles
 from management.role_binding.model import RoleBinding
+from management.role_binding.service import RoleBindingService
 from management.tenant_mapping.model import DefaultAccessType, TenantMapping
 from management.tenant_mapping.v2_activation import (
     InvalidV2OptOutError,
@@ -40,6 +41,7 @@ from management.tenant_mapping.v2_activation import (
     set_v2_opt_in_state,
 )
 from management.tenant_service.v2 import TenantNotBootstrappedError
+from tests.identity_request import IdentityRequest
 from tests.management.role.test_dual_write import RbacFixture
 
 from api.models import Tenant
@@ -223,7 +225,7 @@ class V2OptInTests(TestCase):
         self._assert_opt_in_state(True)
 
 
-class V2OptInDefaultBindingsTests(TestCase):
+class V2OptInDefaultBindingsTests(IdentityRequest):
     """Tests that opting-in to V2 creates the tenant's default role bindings."""
 
     def setUp(self):
@@ -330,5 +332,26 @@ class V2OptInDefaultBindingsTests(TestCase):
 
         self.mapping.refresh_from_db()
         self.assertIsNone(self.mapping.v2_opted_in_at)
+        self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), len(CONCRETE_SCOPES))
+        self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), len(CONCRETE_SCOPES))
+
+    def test_list_read_recovers_bindings_after_incomplete_seeding(self):
+        """A list read retries default binding creation when initial opt-in failed due to missing groups."""
+        # Opt in while platform roles are unavailable — bindings silently skipped
+        with patch(
+            "management.role_binding.service.RoleBindingService._create_all_default_bindings",
+            side_effect=DefaultGroupNotAvailableError(),
+        ):
+            set_v2_opt_in_state(self.tenant, True)
+
+        self.mapping.refresh_from_db()
+        self.assertIsNotNone(self.mapping.v2_opted_in_at)
+        self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 0)
+
+        # Now roles and groups are seeded (setUp already did that).
+        # A list read should lazily create the missing default bindings.
+        service = RoleBindingService(self.tenant)
+        service.get_role_bindings_for_list({})
+
         self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), len(CONCRETE_SCOPES))
         self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), len(CONCRETE_SCOPES))

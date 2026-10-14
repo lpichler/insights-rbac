@@ -207,6 +207,11 @@ class RoleBindingService:
             Ordering is handled by V2CursorPagination.get_ordering() to ensure
             cursor pagination works correctly with the requested order_by parameter.
         """
+        # Ensure default bindings exist (lazy creation), same as the by-subject path.
+        # This recovers bindings when opt-in completed before required groups/roles
+        # were seeded and the initial creation was skipped.
+        self._ensure_default_bindings_exist()
+
         resource_id = params.get("resource_id")
         resource_type = params.get("resource_type")
         exclude_sources = params.get("exclude_sources", ExcludeSources.NONE)
