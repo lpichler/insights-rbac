@@ -82,7 +82,13 @@ def problem_response_body(
         # omit it, which, per RFC 9457, means clients should just look at the status code.
         problem_type = STATUS_PROBLEM_TYPES.get(status_code)
 
-    title = PROBLEM_TYPE_TITLES[problem_type] if problem_type is not None else HTTPStatus(status_code).phrase
+    if problem_type is not None:
+        title = PROBLEM_TYPE_TITLES.get(problem_type)
+
+        if title is None:
+            raise AssertionError(f"Title not found for problem type: {problem_type!r}")
+    else:
+        title = HTTPStatus(status_code).phrase
 
     result = dict(extra_data) if extra_data is not None else {}
 
