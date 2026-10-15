@@ -168,7 +168,7 @@ class RoleBindingService:
         subject_id = params.get("subject_id")
         exclude_sources = params.get("exclude_sources", ExcludeSources.NONE)
 
-        # TODO(RHCLOUD-50167): Remove after backfilling existing opt-in tenants.
+        # TODO(RHCLOUD-50990): Remove once the RHCLOUD-50168 backfill has run for existing opt-in tenants.
         self._ensure_default_bindings_exist()
 
         binding_uuids, exclude_direct = self._resolve_inherited_bindings(exclude_sources, resource_type, resource_id)
@@ -207,7 +207,7 @@ class RoleBindingService:
             Ordering is handled by V2CursorPagination.get_ordering() to ensure
             cursor pagination works correctly with the requested order_by parameter.
         """
-        # TODO(RHCLOUD-50167): Remove after backfilling existing opt-in tenants.
+        # TODO(RHCLOUD-50990): Remove once the RHCLOUD-50168 backfill has run for existing opt-in tenants.
         self._ensure_default_bindings_exist()
 
         resource_id = params.get("resource_id")
@@ -710,10 +710,10 @@ class RoleBindingService:
         """Lazily create default role bindings if they don't exist.
 
         .. deprecated::
-            Temporary self-healing for tenants that opted-in before required
-            groups/roles were fully seeded.  Remove this method **and both call
-            sites** once all existing opt-in tenants have been backfilled
-            (see RHCLOUD-50167).
+            Temporary path for tenants that opted in before default bindings were
+            created eagerly on opt-in.  Remove this method **and both call sites**
+            once the RHCLOUD-50168 backfill has run for existing opt-in tenants
+            (tracked in RHCLOUD-50990).
 
         Checks ADMIN binding count as a fast-path: if all 3 ADMIN bindings
         exist, default bindings have already been processed for this tenant.
@@ -824,8 +824,8 @@ class RoleBindingService:
         The group is looked up once per service instance, since the same two groups are
         reused for every scope.
 
-        Raises:
-            DefaultGroupNotAvailableError: If seeding has not yet created the group.
+        The public default groups are seeded before the service starts, so a missing group is
+        not an expected state and ``Group.DoesNotExist`` is left to propagate.
         """
         group = self._public_default_groups.get(access_type)
 
@@ -833,11 +833,7 @@ class RoleBindingService:
             group_set = (
                 Group.admin_default_set() if access_type == DefaultAccessType.ADMIN else Group.platform_default_set()
             )
-            try:
-                group = group_set.public_tenant_only().get()
-            except Group.DoesNotExist as err:
-                logger.error(f"Public default group for {access_type} not found")
-                raise DefaultGroupNotAvailableError(f"Public default group not found for {access_type}") from err
+            group = group_set.public_tenant_only().get()
             self._public_default_groups[access_type] = group
 
         return group

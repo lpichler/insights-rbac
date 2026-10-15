@@ -288,8 +288,8 @@ class V2OptInDefaultBindingsTests(IdentityRequest):
         self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 0)
         self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), 0)
 
-    def test_opt_in_succeeds_when_public_default_group_missing(self):
-        """A public default group missing from a warm policy cache is logged, not raised."""
+    def test_opt_in_fails_when_public_default_group_missing(self):
+        """A missing public default group is not an expected state, so opt-in fails and is rolled back."""
         # Warm the process-lifetime policy UUID cache first, so resolving the platform role
         # succeeds and creation gets as far as looking the group itself up.
         policy_service = GlobalPolicyIdService.shared()
@@ -298,10 +298,12 @@ class V2OptInDefaultBindingsTests(IdentityRequest):
 
         Group.admin_default_set().public_tenant_only().delete()
 
-        set_v2_opt_in_state(self.tenant, True)
+        with self.assertRaises(RuntimeError):
+            with transaction.atomic():
+                set_v2_opt_in_state(self.tenant, True)
 
         self.mapping.refresh_from_db()
-        self.assertIsNotNone(self.mapping.v2_opted_in_at)
+        self.assertIsNone(self.mapping.v2_opted_in_at)
         self.assertEqual(self._count_default_bindings(DefaultAccessType.ADMIN), 0)
         self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), 0)
 
@@ -336,7 +338,7 @@ class V2OptInDefaultBindingsTests(IdentityRequest):
         self.assertEqual(self._count_default_bindings(DefaultAccessType.USER), len(CONCRETE_SCOPES))
 
     def test_list_read_recovers_bindings_after_incomplete_seeding(self):
-        """A list read retries default binding creation when initial opt-in failed due to missing groups."""
+        """A list read retries default binding creation when initial opt-in skipped it due to missing roles."""
         # Opt in while platform roles are unavailable — bindings silently skipped
         with patch(
             "management.role_binding.service.RoleBindingService._create_all_default_bindings",

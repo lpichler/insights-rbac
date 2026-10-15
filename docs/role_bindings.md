@@ -717,8 +717,12 @@ Every tenant gets default role bindings. They are created eagerly when the tenan
 (`set_v2_opt_in_state`), and lazily on first access for tenants that were already opted in before that
 behaviour existed. Both paths go through `RoleBindingService.create_default_bindings`, which is idempotent.
 
-If the platform roles or public default groups have not been seeded yet, creation is logged and skipped
-rather than failing the caller -- the lazy path fills the bindings in once seeding has caught up.
+If the platform roles have not been seeded yet, creation is logged and skipped rather than failing the
+caller -- the lazy path fills the bindings in once seeding has caught up. The public default groups are
+seeded before the service starts, so a missing group is treated as an error and fails the caller.
+
+The lazy path is temporary: it is removed in RHCLOUD-50990, once the RHCLOUD-50168 backfill has run for
+existing opt-in tenants.
 
 **Source:** `rbac/management/role_binding/service.py` (`_ensure_default_bindings_exist`, `create_default_bindings`)
 
