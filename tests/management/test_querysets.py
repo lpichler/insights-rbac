@@ -34,6 +34,7 @@ from management.querysets import (
     get_policy_queryset,
     get_role_queryset,
     get_access_queryset,
+    _filter_admin_default,
     _filter_default_groups,
     _check_user_username_is_org_admin,
     _is_username_org_admin_for_request,
@@ -921,3 +922,61 @@ class QuerySetTest(TestCase):
                     _is_username_org_admin_for_request(request, None),
                     "bypass with no username should return the caller's admin flag",
                 )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    def test_is_username_org_admin_for_request_bypass_missing_caller_username(self):
+        """Test that a missing caller username returns False instead of raising AttributeError."""
+        user = Mock(spec=User, admin=True, username=None)
+        request = Mock(user=user)
+        self.assertFalse(
+            _is_username_org_admin_for_request(request, "some-user"),
+            "bypass should return False when the caller has no username",
+        )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    @patch("management.querysets.get_object_principal_queryset", return_value=Role.objects.none())
+    @patch("management.querysets.annotate_roles_with_counts", side_effect=lambda qs: qs)
+    def test_get_role_queryset_bypass_different_username(self, _mock_annotate, _mock_principal_qs):
+        """Test that the role queryset bypass does not grant admin to a different queried user."""
+        self._setup_roles_for_role_username_queryset_tests()
+        user = Mock(spec=User, admin=True, username="admin_caller")
+        req = Mock(user=user, method="GET", tenant=self.tenant, query_params={"username": "other_user"})
+        get_role_queryset(req)
+        # user_from_query should NOT be admin because bypass returns False for a different username
+        self.assertFalse(
+            req.user_from_query.admin,
+            "bypass should not grant admin to a different queried user in role queryset",
+        )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    @patch("management.querysets.get_object_principal_queryset", return_value=Access.objects.none())
+    def test_get_access_queryset_bypass_different_username(self, _mock_principal_qs):
+        """Test that the access queryset bypass does not grant admin to a different queried user."""
+        user = Mock(spec=User, admin=True, username="admin_caller", is_service_account=False)
+        req = Mock(
+            user=user,
+            method="GET",
+            tenant=self.tenant,
+            query_params={APPLICATION_KEY: "app", "username": "other_user"},
+        )
+        get_access_queryset(req)
+        # The is_org_admin passed to get_object_principal_queryset should be False
+        call_kwargs = _mock_principal_qs.call_args
+        self.assertFalse(
+            call_kwargs[1]["is_org_admin"],
+            "bypass should pass is_org_admin=False when querying a different user in access queryset",
+        )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    def test_filter_admin_default_bypass_different_username(self):
+        """Test that admin-default filter bypass does not add admin groups for a different user."""
+        Group.objects.create(name="admin_default_group", tenant=self.tenant, admin_default=True)
+        base_qs = Group.objects.filter(tenant=self.tenant, admin_default=False)
+        user = Mock(spec=User, admin=True, username="admin_caller")
+        req = Mock(user=user, tenant=self.tenant, query_params={"username": "other_user"})
+        result = _filter_admin_default(req, base_qs)
+        admin_default_in_result = result.filter(admin_default=True).exists()
+        self.assertFalse(
+            admin_default_in_result,
+            "bypass should not include admin-default groups when querying a different user",
+        )

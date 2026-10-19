@@ -324,7 +324,8 @@ def _check_user_username_is_org_admin(request: Request, username: str) -> bool:
 def _is_username_org_admin_for_request(request: Request, username: Optional[str]) -> bool:
     """Resolve admin status for username filters, keeping smoke bypass scoped to the caller."""
     if settings.BYPASS_BOP_VERIFICATION:
-        if username and username.casefold() != request.user.username.casefold():
+        caller_username = request.user.username
+        if username and (not caller_username or username.casefold() != caller_username.casefold()):
             return False
         return bool(request.user.admin)
 
