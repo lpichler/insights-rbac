@@ -20,7 +20,7 @@ import uuid
 from unittest.mock import Mock, patch
 
 from django.core.exceptions import PermissionDenied
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from management.group.model import Group
 from management.policy.model import Policy
@@ -36,6 +36,7 @@ from management.querysets import (
     get_access_queryset,
     _filter_default_groups,
     _check_user_username_is_org_admin,
+    _is_username_org_admin_for_request,
 )
 from management.utils import APPLICATION_KEY
 from rest_framework import serializers
@@ -884,3 +885,39 @@ class QuerySetTest(TestCase):
 
         # Make sure the underlying function gets called.
         get_admin_from_proxy.assert_called_with(request=request, username=username)
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    def test_is_username_org_admin_for_request_bypass_different_username(self):
+        """Test that a different username returns False when bypass is enabled."""
+        user = Mock(spec=User, admin=True, username="caller")
+        request = Mock(user=user)
+        self.assertFalse(
+            _is_username_org_admin_for_request(request, "other-user"),
+            "bypass should return False for a username that does not match the caller",
+        )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    def test_is_username_org_admin_for_request_bypass_case_insensitive_match(self):
+        """Test that a case-insensitive caller match returns the caller's admin flag."""
+        for admin_flag in (True, False):
+            with self.subTest(admin=admin_flag):
+                user = Mock(spec=User, admin=admin_flag, username="Caller")
+                request = Mock(user=user)
+                self.assertEqual(
+                    admin_flag,
+                    _is_username_org_admin_for_request(request, "cALLER"),
+                    "bypass should return the caller's admin flag for a case-insensitive match",
+                )
+
+    @override_settings(BYPASS_BOP_VERIFICATION=True)
+    def test_is_username_org_admin_for_request_bypass_no_username(self):
+        """Test that a missing username returns the caller's admin flag."""
+        for admin_flag in (True, False):
+            with self.subTest(admin=admin_flag):
+                user = Mock(spec=User, admin=admin_flag, username="caller")
+                request = Mock(user=user)
+                self.assertEqual(
+                    admin_flag,
+                    _is_username_org_admin_for_request(request, None),
+                    "bypass with no username should return the caller's admin flag",
+                )

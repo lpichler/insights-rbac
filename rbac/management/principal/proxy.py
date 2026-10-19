@@ -117,6 +117,7 @@ class PrincipalProxy:  # pylint: disable=too-few-public-methods
 
     @staticmethod
     def _call_item(item, return_id=False):
+        """Build a normalised principal dict from a raw BOP response item."""
         processed_item = {
             "username": item.get("username"),
             "email": item.get("email"),

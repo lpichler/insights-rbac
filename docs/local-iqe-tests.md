@@ -111,8 +111,12 @@ spaces. Tests excluded by the filter are reported as `deselected`.
 Edit or add `test_*.py` files under:
 
 ```text
-$HOME/Projects/iqe-rbac-plugin/iqe_rbac/tests/
+$IQE_RBAC_PLUGIN_DIR/iqe_rbac/tests/
 ```
+
+The default `IQE_RBAC_PLUGIN_DIR` is `$HOME/Projects/iqe-rbac-plugin`. If you
+configured a custom checkout with the `IQE_RBAC_PLUGIN_DIR` environment
+variable, use that path instead.
 
 The editable installation picks up these changes without rerunning setup.
 Run the new test by name with `filter`, then run the suite as needed. Changes
