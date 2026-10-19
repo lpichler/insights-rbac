@@ -887,6 +887,65 @@ class QuerySetTest(TestCase):
         # Make sure the underlying function gets called.
         get_admin_from_proxy.assert_called_with(request=request, username=username)
 
+
+class BypassBOPVerificationTest(IdentityRequest):
+    """Tests for BYPASS_BOP_VERIFICATION behavior in queryset helpers.
+
+    Separated from QuerySetTest because these tests exercise request-level
+    bypass logic and benefit from the IdentityRequest lifecycle (tenant,
+    identity headers, request context) rather than the custom
+    setUpClass/tearDownClass used by QuerySetTest.
+    """
+
+    def _create_groups(self):
+        """Setup groups for tests."""
+        Group.objects.create(name="group1", tenant=self.tenant)
+        Group.objects.create(name="group2", tenant=self.tenant)
+        Group.objects.create(name="group3", tenant=self.tenant)
+        Group.objects.create(name="group4", tenant=self.tenant)
+        Group.objects.create(name="group5", tenant=self.tenant)
+
+    def _create_roles(self):
+        """Setup roles for tests."""
+        Role.objects.create(name="role1", tenant=self.tenant)
+        Role.objects.create(name="role2", tenant=self.tenant)
+        Role.objects.create(name="role3", tenant=self.tenant)
+        Role.objects.create(name="role4", tenant=self.tenant)
+        Role.objects.create(name="role5", tenant=self.tenant)
+
+    def _create_policies(self):
+        """Setup policies for tests."""
+        Policy.objects.create(name="policy1", tenant=self.tenant)
+        Policy.objects.create(name="policy2", tenant=self.tenant)
+        Policy.objects.create(name="policy3", tenant=self.tenant)
+        Policy.objects.create(name="policy4", tenant=self.tenant)
+        Policy.objects.create(name="policy5", tenant=self.tenant)
+
+    def _setup_roles_for_role_username_queryset_tests(self):
+        self._create_groups()
+        self._create_policies()
+        self._create_roles()
+
+        principal = Principal.objects.create(username="test_user2", tenant=self.tenant)
+        group = Group.objects.filter(tenant=self.tenant).first()
+        policy = Policy.objects.filter(tenant=self.tenant).first()
+        roles = Role.objects.filter(tenant=self.tenant)
+
+        policy.roles.add(roles.first())
+        group.principals.add(principal)
+        group.policies.add(policy)
+        return roles
+
+    def tearDown(self):
+        """Clean up DB objects created by bypass tests."""
+        Group.objects.filter(tenant=self.tenant).delete()
+        Principal.objects.filter(tenant=self.tenant).delete()
+        Role.objects.filter(tenant=self.tenant).delete()
+        Policy.objects.filter(tenant=self.tenant).delete()
+        Permission.objects.filter(tenant=self.tenant).delete()
+        Access.objects.filter(tenant=self.tenant).delete()
+        super().tearDown()
+
     @override_settings(BYPASS_BOP_VERIFICATION=True)
     def test_is_username_org_admin_for_request_bypass_different_username(self):
         """Test that a different username returns False when bypass is enabled."""
@@ -941,12 +1000,14 @@ class QuerySetTest(TestCase):
         self._setup_roles_for_role_username_queryset_tests()
         user = Mock(spec=User, admin=True, username="admin_caller")
         req = Mock(user=user, method="GET", tenant=self.tenant, query_params={"username": "other_user"})
-        get_role_queryset(req)
+        result = get_role_queryset(req)
         # user_from_query should NOT be admin because bypass returns False for a different username
         self.assertFalse(
             req.user_from_query.admin,
             "bypass should not grant admin to a different queried user in role queryset",
         )
+        # The returned queryset should reflect the mocked principal queryset (empty)
+        self.assertEqual(result.count(), 0, "role queryset should be empty for a non-matching bypass user")
 
     @override_settings(BYPASS_BOP_VERIFICATION=True)
     @patch("management.querysets.get_object_principal_queryset", return_value=Access.objects.none())
@@ -959,13 +1020,15 @@ class QuerySetTest(TestCase):
             tenant=self.tenant,
             query_params={APPLICATION_KEY: "app", "username": "other_user"},
         )
-        get_access_queryset(req)
+        result = get_access_queryset(req)
         # The is_org_admin passed to get_object_principal_queryset should be False
         call_kwargs = _mock_principal_qs.call_args
         self.assertFalse(
             call_kwargs[1]["is_org_admin"],
             "bypass should pass is_org_admin=False when querying a different user in access queryset",
         )
+        # The returned queryset should reflect the mocked principal queryset (empty)
+        self.assertEqual(result.count(), 0, "access queryset should be empty for a non-matching bypass user")
 
     @override_settings(BYPASS_BOP_VERIFICATION=True)
     def test_filter_admin_default_bypass_different_username(self):
