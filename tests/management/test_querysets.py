@@ -897,55 +897,6 @@ class BypassBOPVerificationTest(IdentityRequest):
     setUpClass/tearDownClass used by QuerySetTest.
     """
 
-    def _create_groups(self):
-        """Setup groups for tests."""
-        Group.objects.create(name="group1", tenant=self.tenant)
-        Group.objects.create(name="group2", tenant=self.tenant)
-        Group.objects.create(name="group3", tenant=self.tenant)
-        Group.objects.create(name="group4", tenant=self.tenant)
-        Group.objects.create(name="group5", tenant=self.tenant)
-
-    def _create_roles(self):
-        """Setup roles for tests."""
-        Role.objects.create(name="role1", tenant=self.tenant)
-        Role.objects.create(name="role2", tenant=self.tenant)
-        Role.objects.create(name="role3", tenant=self.tenant)
-        Role.objects.create(name="role4", tenant=self.tenant)
-        Role.objects.create(name="role5", tenant=self.tenant)
-
-    def _create_policies(self):
-        """Setup policies for tests."""
-        Policy.objects.create(name="policy1", tenant=self.tenant)
-        Policy.objects.create(name="policy2", tenant=self.tenant)
-        Policy.objects.create(name="policy3", tenant=self.tenant)
-        Policy.objects.create(name="policy4", tenant=self.tenant)
-        Policy.objects.create(name="policy5", tenant=self.tenant)
-
-    def _setup_roles_for_role_username_queryset_tests(self):
-        self._create_groups()
-        self._create_policies()
-        self._create_roles()
-
-        principal = Principal.objects.create(username="test_user2", tenant=self.tenant)
-        group = Group.objects.filter(tenant=self.tenant).first()
-        policy = Policy.objects.filter(tenant=self.tenant).first()
-        roles = Role.objects.filter(tenant=self.tenant)
-
-        policy.roles.add(roles.first())
-        group.principals.add(principal)
-        group.policies.add(policy)
-        return roles
-
-    def tearDown(self):
-        """Clean up DB objects created by bypass tests."""
-        Group.objects.filter(tenant=self.tenant).delete()
-        Principal.objects.filter(tenant=self.tenant).delete()
-        Role.objects.filter(tenant=self.tenant).delete()
-        Policy.objects.filter(tenant=self.tenant).delete()
-        Permission.objects.filter(tenant=self.tenant).delete()
-        Access.objects.filter(tenant=self.tenant).delete()
-        super().tearDown()
-
     @override_settings(BYPASS_BOP_VERIFICATION=True)
     def test_is_username_org_admin_for_request_bypass_different_username(self):
         """Test that a different username returns False when bypass is enabled."""
@@ -997,7 +948,6 @@ class BypassBOPVerificationTest(IdentityRequest):
     @patch("management.querysets.annotate_roles_with_counts", side_effect=lambda qs: qs)
     def test_get_role_queryset_bypass_different_username(self, _mock_annotate, _mock_principal_qs):
         """Test that the role queryset bypass does not grant admin to a different queried user."""
-        self._setup_roles_for_role_username_queryset_tests()
         user = Mock(spec=User, admin=True, username="admin_caller")
         req = Mock(user=user, method="GET", tenant=self.tenant, query_params={"username": "other_user"})
         result = get_role_queryset(req)
