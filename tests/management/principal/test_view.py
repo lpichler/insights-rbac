@@ -237,6 +237,7 @@ class PrincipalViewsetTests(IdentityRequest):
         self.assertCountEqual(
             list(principal.keys()), ["username", "first_name", "last_name", "email", "user_id", "type", "is_active"]
         )
+        self.assertIs(principal["is_active"], True)
         self.assertIsNotNone(principal.get("username"))
         self.assertEqual(principal.get("username"), self.principal.username)
 
